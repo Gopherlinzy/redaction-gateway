@@ -3,3 +3,7 @@ worktrees/
 __pycache__/
 .pytest_cache/
 .venv/
+*.pyc
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/

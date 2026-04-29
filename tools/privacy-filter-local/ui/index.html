@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy Filter Local</title>
+  </head>
+  <body>
+    <h1>Privacy Filter Local</h1>
+    <textarea id="sourceText" rows="12" cols="80"></textarea>
+    <div>
+      <button id="redactButton" type="button">Redact</button>
+      <button id="copyButton" type="button">Copy Redacted Text</button>
+    </div>
+    <section>
+      <h2>Summary</h2>
+      <div id="riskLevel">risk: unknown</div>
+      <div id="spanCount">spans: 0</div>
+    </section>
+    <section>
+      <h2>Detections</h2>
+      <pre id="detectionList">[]</pre>
+    </section>
+    <pre id="redactedText"></pre>
+    <script>
+      document.getElementById("redactButton").addEventListener("click", async () => {
+        const text = document.getElementById("sourceText").value;
+        const response = await fetch("/redact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            source: "manual_ui",
+            target: "ai_model",
+            mode: "warn"
+          })
+        });
+        const data = await response.json();
+        document.getElementById("riskLevel").textContent = `risk: ${data.risk_level}`;
+        document.getElementById("spanCount").textContent = `spans: ${data.spans.length}`;
+        document.getElementById("detectionList").textContent = JSON.stringify(data.spans, null, 2);
+        document.getElementById("redactedText").textContent = data.redacted_text;
+      });
+
+      document.getElementById("copyButton").addEventListener("click", async () => {
+        await navigator.clipboard.writeText(document.getElementById("redactedText").textContent);
+      });
+    </script>
+  </body>
+</html>
