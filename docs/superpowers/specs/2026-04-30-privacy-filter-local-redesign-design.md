@@ -176,19 +176,20 @@ The risk panel should be visually hotter than the rest of the page through stron
 
 This panel is required.
 
-It translates detection results into plain recommendations. The approved tone is directive-first, because the user explicitly approved the version that told them what to do next.
+It translates detection results into plain recommendations. The approved tone is explanation-first: the UI should state what was detected and why that creates risk before telling the user what to do next.
 
 Recommendation copy style:
 
-- short imperative sentence first
-- optional reason implied by surrounding risk context
+- short explanation first
+- explicit mention of the detected category when helpful
+- concrete recommendation immediately after the explanation
 - written for fast action, not policy prose
 
 Example structure:
 
-- `Redact before sending.`
-- `Review internal credentials locally.`
-- `Keep only placeholders in outbound text.`
+- `Detected secret. Replace it before sending externally.`
+- `Detected private email. Redact it if the text will leave local review.`
+- `Detected internal credential material. Keep only placeholders in outbound text.`
 
 ### Replacement Mapping Panel
 
