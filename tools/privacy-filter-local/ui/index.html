@@ -136,6 +136,20 @@
         flex-wrap: wrap;
       }
 
+      .mode-panel {
+        display: grid;
+        gap: 8px;
+      }
+
+      select {
+        width: 100%;
+        padding: 12px 14px;
+        border: 1px solid var(--panel-border);
+        background: rgba(0, 0, 0, 0.26);
+        color: var(--text);
+        font: inherit;
+      }
+
       button {
         appearance: none;
         border: 1px solid var(--accent);
@@ -315,6 +329,15 @@
             Review sensitive text locally, redact it, then copy the safe output.
           </p>
           <textarea id="sourceText" rows="12"></textarea>
+          <div class="mode-panel">
+            <label class="mapping-label" for="detectionMode">Detection Mode</label>
+            <select id="detectionMode">
+              <option value="high_recall">High Recall</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="high_precision">High Precision</option>
+            </select>
+            <p id="modeDescription" class="hero-copy"></p>
+          </div>
           <div class="control-row">
             <button id="redactButton" type="button">Redact</button>
             <button id="copyButton" type="button" class="secondary-action">Copy Redacted Text</button>
@@ -333,8 +356,13 @@
 
       <section id="nextStepPanel" class="panel">
         <div class="section-label">Recommended Next Step</div>
-        <div id="recommendationList" class="recommendation-list">
-          <p class="recommendation-item">Run a redaction check to see what needs replacement before outbound use.</p>
+        <div class="mapping-label">Primary Risk</div>
+        <div id="primaryRiskList" class="recommendation-list">
+          <p class="recommendation-item">Run a redaction check to inspect secrets before outbound use.</p>
+        </div>
+        <div class="mapping-label">Secondary Signals</div>
+        <div id="secondarySignalsList" class="recommendation-list">
+          <p class="recommendation-item">PII findings will appear here after a scan.</p>
         </div>
       </section>
 
@@ -395,14 +423,35 @@
         default: "Detected sensitive content. Keep only placeholders in outbound text."
       };
 
+      const MODE_COPY = {
+        high_recall: "Try hard not to miss suspicious secrets. This mode may produce more false positives.",
+        balanced: "Blend common secret coverage with tolerable noise for everyday developer use.",
+        high_precision: "Prefer strong indicators only. This mode reduces noise but may miss edge-case secrets."
+      };
+      const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:7861" : "";
+
+      const SECRET_KIND_COPY = {
+        api_key: "Detected API key material. Replace it before sending externally.",
+        bearer: "Detected bearer credential. Replace it before sending externally.",
+        jwt: "Detected JWT credential material. Use the redacted version for outbound text.",
+        session: "Detected session material. Use the redacted version for outbound text.",
+        verification_code: "Detected verification code in a secret context. Review before sharing.",
+        db_connection: "Detected database connection string with embedded credentials. Replace it before sharing.",
+        webhook_secret: "Detected webhook or client secret. Replace it before sending externally.",
+        token: "Detected token-like secret material. Review before sharing."
+      };
+
       const sourceText = document.getElementById("sourceText");
+      const detectionMode = document.getElementById("detectionMode");
+      const modeDescription = document.getElementById("modeDescription");
       const redactButton = document.getElementById("redactButton");
       const copyButton = document.getElementById("copyButton");
       const statusMessage = document.getElementById("statusMessage");
       const riskLevel = document.getElementById("riskLevel");
       const spanCount = document.getElementById("spanCount");
       const riskReason = document.getElementById("riskReason");
-      const recommendationList = document.getElementById("recommendationList");
+      const primaryRiskList = document.getElementById("primaryRiskList");
+      const secondarySignalsList = document.getElementById("secondarySignalsList");
       const sourceMappingList = document.getElementById("sourceMappingList");
       const outputMappingList = document.getElementById("outputMappingList");
       const detectionList = document.getElementById("detectionList");
@@ -437,15 +486,59 @@
         return messages;
       }
 
-      function renderRecommendationList(spans, reason, riskLevelValue) {
-        const messages = buildRecommendationMessage(spans, reason, riskLevelValue);
-        recommendationList.innerHTML = "";
+      function getPrimarySecretSpans(spans) {
+        return spans.filter((span) => span.label === "secret");
+      }
 
+      function getSecondaryPiiSpans(spans) {
+        return spans.filter((span) => span.label !== "secret");
+      }
+
+      function renderModeDescription() {
+        modeDescription.textContent = MODE_COPY[detectionMode.value];
+      }
+
+      function renderPrimaryRisk(spans, reason) {
+        const secretSpans = getPrimarySecretSpans(spans);
+        primaryRiskList.innerHTML = "";
+
+        if (!secretSpans.length) {
+          primaryRiskList.innerHTML =
+            '<p class="recommendation-item">No developer secrets detected. Review the secondary signals before sharing.</p>';
+          return;
+        }
+
+        for (const span of secretSpans) {
+          const item = document.createElement("p");
+          item.className = "recommendation-item";
+          item.textContent = SECRET_KIND_COPY[span.kind] || "Detected secret. Review before sharing.";
+          primaryRiskList.appendChild(item);
+        }
+
+        if (reason && !secretSpans.some((span) => span.kind in SECRET_KIND_COPY)) {
+          const item = document.createElement("p");
+          item.className = "recommendation-item";
+          item.textContent = `Why this is risky: ${reason}.`;
+          primaryRiskList.appendChild(item);
+        }
+      }
+
+      function renderSecondarySignals(spans) {
+        const piiSpans = getSecondaryPiiSpans(spans);
+        secondarySignalsList.innerHTML = "";
+
+        if (!piiSpans.length) {
+          secondarySignalsList.innerHTML =
+            '<p class="recommendation-item">No secondary PII signals detected.</p>';
+          return;
+        }
+
+        const messages = buildRecommendationMessage(piiSpans, "", "medium");
         for (const message of messages) {
           const item = document.createElement("p");
           item.className = "recommendation-item";
           item.textContent = message;
-          recommendationList.appendChild(item);
+          secondarySignalsList.appendChild(item);
         }
       }
 
@@ -479,6 +572,18 @@
         }
       }
 
+      function formatDetection(span) {
+        const details = {
+          label: span.label,
+          kind: span.kind || null,
+          source: span.source || null,
+          score: span.score ?? null,
+          reason_codes: span.reason_codes || [],
+          text: span.text
+        };
+        return JSON.stringify(details, null, 2);
+      }
+
       function selectRedactedText() {
         const selection = window.getSelection();
         const range = document.createRange();
@@ -503,13 +608,17 @@
       }
 
       function resetResultPanels() {
-        recommendationList.innerHTML = "";
+        primaryRiskList.innerHTML = "";
+        secondarySignalsList.innerHTML = "";
         sourceMappingList.innerHTML = "";
         outputMappingList.innerHTML = "";
       }
 
-      renderRecommendationList([], "", "unknown");
+      renderModeDescription();
+      renderPrimaryRisk([], "");
+      renderSecondarySignals([]);
       renderReplacementMapping([]);
+      detectionMode.addEventListener("change", renderModeDescription);
 
       redactButton.addEventListener("click", async () => {
         const text = sourceText.value;
@@ -517,14 +626,15 @@
         setStatus("Redacting...");
         redactButton.disabled = true;
         try {
-          const response = await fetch("/redact", {
+          const response = await fetch(`${API_BASE}/redact`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text,
               source: "manual_ui",
               target: "ai_model",
-              mode: "warn"
+              mode: "warn",
+              detection_mode: detectionMode.value
             })
           });
           if (!response.ok) {
@@ -535,9 +645,10 @@
           riskLevel.textContent = `risk: ${data.risk_level}`;
           spanCount.textContent = `spans: ${data.spans.length}`;
           riskReason.textContent = data.reason;
-          detectionList.textContent = JSON.stringify(data.spans, null, 2);
+          detectionList.textContent = data.spans.map(formatDetection).join("\n\n");
           redactedText.textContent = data.redacted_text;
-          renderRecommendationList(data.spans, data.reason, data.risk_level);
+          renderPrimaryRisk(data.spans, data.reason);
+          renderSecondarySignals(data.spans);
           renderReplacementMapping(data.spans);
           setStatus("Redaction complete.");
         } catch (error) {

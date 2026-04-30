@@ -5,7 +5,7 @@ Local-only text redaction gateway for AI prompts and Linear writes.
 ## Setup
 
 ```bash
-cd /Users/admin/Documents/New project/.worktrees/privacy-filter-v1/tools/privacy-filter-local
+cd /Users/admin/Documents/privacy-filter/.worktrees/privacy-filter-v1/tools/privacy-filter-local
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

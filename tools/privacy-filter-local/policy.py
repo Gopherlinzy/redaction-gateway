@@ -13,8 +13,8 @@ def decide_action(
     del source
 
     labels = {str(span["label"]) for span in spans}
-    if SECRET_LABELS & labels and target in {"ai_model", "linear"}:
-        return {"decision": "block", "risk_level": "high", "reason": "secret detected"}
+    if SECRET_LABELS & labels:
+        return {"decision": "warn", "risk_level": "high", "reason": "secret detected"}
     if REDACT_LABELS & labels:
         return {"decision": "redact", "risk_level": "medium", "reason": "sensitive pii"}
     if SOFT_LABELS & labels and target == "local_review":

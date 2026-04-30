@@ -1,14 +1,27 @@
 from pathlib import Path
+import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from detectors.opf_runtime import detect_with_runtime
+from detectors.secret_candidates import generate_secret_candidates
+from detectors.secret_scores import filter_candidates_for_mode
 from detectors.regex_backstop import detect_regex_secret_spans
 from policy import decide_action
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
+DETECTION_MODE_DEFAULT = "balanced"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 PLACEHOLDERS = {
     "secret": "<SECRET>",
@@ -27,12 +40,20 @@ class ScanRequest(BaseModel):
     source: str
     target: str
     mode: str
+    detection_mode: str = DETECTION_MODE_DEFAULT
 
 
 def span_priority(span: dict[str, object]) -> tuple[int, int]:
     label = str(span["label"])
+    source = str(span.get("source", ""))
     width = int(span["end"]) - int(span["start"])
-    return (1 if label == "secret" else 0, width)
+    if label == "secret" and source == "parser_rule":
+        return (3, -width)
+    if label == "secret" and source == "regex":
+        return (2, -width)
+    if label == "secret":
+        return (1, -width)
+    return (0, width)
 
 
 def merge_spans(spans: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -60,8 +81,19 @@ def merge_spans(spans: list[dict[str, object]]) -> list[dict[str, object]]:
     return merged
 
 
-def collect_spans(text: str) -> list[dict[str, object]]:
-    spans = detect_with_runtime(text) + detect_regex_secret_spans(text)
+def collect_spans(text: str, detection_mode: str = DETECTION_MODE_DEFAULT) -> list[dict[str, object]]:
+    runtime_spans: list[dict[str, object]]
+    try:
+        runtime_spans = detect_with_runtime(text)
+    except Exception as exc:
+        logger.warning("OPF runtime unavailable, falling back to regex-only detection: %s", exc)
+        runtime_spans = []
+    parser_candidates = filter_candidates_for_mode(
+        generate_secret_candidates(text),
+        detection_mode,
+    )
+    legacy_regex_spans = detect_regex_secret_spans(text, detection_mode)
+    spans = runtime_spans + legacy_regex_spans + parser_candidates
     return merge_spans(spans)
 
 
@@ -100,7 +132,7 @@ def index() -> str:
 
 @app.post("/scan")
 def scan(request: ScanRequest) -> dict[str, object]:
-    spans = collect_spans(request.text)
+    spans = collect_spans(request.text, request.detection_mode)
     decision = decide_action(spans, request.source, request.target, request.mode)
     return {
         "spans": spans,
@@ -112,13 +144,13 @@ def scan(request: ScanRequest) -> dict[str, object]:
 
 @app.post("/decide")
 def decide(request: ScanRequest) -> dict[str, str]:
-    spans = collect_spans(request.text)
+    spans = collect_spans(request.text, request.detection_mode)
     return decide_action(spans, request.source, request.target, request.mode)
 
 
 @app.post("/redact")
 def redact(request: ScanRequest) -> dict[str, object]:
-    spans = collect_spans(request.text)
+    spans = collect_spans(request.text, request.detection_mode)
     decision = decide_action(spans, request.source, request.target, request.mode)
     return {
         "decision": decision["decision"],
