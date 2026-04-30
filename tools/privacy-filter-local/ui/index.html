@@ -4,46 +4,579 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Privacy Filter Local</title>
+    <style>
+      :root {
+        --bg: #090a0c;
+        --bg-glow: rgba(255, 124, 34, 0.12);
+        --panel: rgba(255, 255, 255, 0.035);
+        --panel-border: rgba(255, 183, 111, 0.22);
+        --panel-strong: rgba(255, 183, 111, 0.34);
+        --text: #efe8dc;
+        --muted: rgba(239, 232, 220, 0.72);
+        --accent: #ff7c22;
+        --accent-soft: #ffb76f;
+        --danger: #ff5f57;
+        --safe: #65d46e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(135deg, var(--bg-glow), transparent 34%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 24%),
+          var(--bg);
+        color: var(--text);
+        font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background:
+          linear-gradient(transparent 0, transparent 23px, rgba(255, 255, 255, 0.03) 24px),
+          linear-gradient(90deg, transparent 0, transparent 23px, rgba(255, 255, 255, 0.02) 24px);
+        background-size: 24px 24px;
+        pointer-events: none;
+        opacity: 0.35;
+      }
+
+      .app-shell {
+        position: relative;
+        z-index: 1;
+        width: min(1160px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 24px 0 32px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .topline {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent-soft);
+        font-size: 11px;
+      }
+
+      .hero-grid,
+      .mapping-grid {
+        display: grid;
+        grid-template-columns: 1.35fr 0.95fr;
+        gap: 16px;
+      }
+
+      .panel {
+        border: 1px solid var(--panel-border);
+        background: var(--panel);
+        padding: 16px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .panel-primary {
+        gap: 14px;
+      }
+
+      .panel-risk {
+        border-left: 4px solid var(--accent);
+        background: linear-gradient(90deg, rgba(255, 124, 34, 0.18), rgba(255, 255, 255, 0.03));
+      }
+
+      .section-label {
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent-soft);
+        font-size: 11px;
+      }
+
+      .hero-title {
+        margin: 0;
+        font-size: clamp(30px, 5vw, 46px);
+        line-height: 0.98;
+        max-width: 12ch;
+      }
+
+      .hero-copy,
+      .recommendation-item,
+      #riskReason,
+      #statusMessage,
+      .empty-state {
+        color: var(--muted);
+        line-height: 1.6;
+        font-size: 14px;
+      }
+
+      textarea,
+      pre,
+      .mapping-row {
+        border: 1px solid var(--panel-border);
+        background: rgba(0, 0, 0, 0.26);
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 240px;
+        padding: 14px 16px;
+        color: var(--text);
+        font: inherit;
+        resize: vertical;
+      }
+
+      .control-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid var(--accent);
+        background: transparent;
+        color: var(--text);
+        padding: 12px 14px;
+        font: inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        cursor: pointer;
+        min-width: 180px;
+      }
+
+      button:hover:not(:disabled) {
+        border-color: var(--accent-soft);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: progress;
+      }
+
+      .secondary-action {
+        border-color: rgba(239, 232, 220, 0.28);
+        color: var(--muted);
+      }
+
+      .risk-summary {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+
+      #riskLevel {
+        font-size: 28px;
+        color: var(--text);
+      }
+
+      #spanCount {
+        color: var(--accent-soft);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 12px;
+      }
+
+      .recommendation-list,
+      .mapping-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .recommendation-item {
+        margin: 0;
+        padding: 12px 14px;
+        border: 1px solid rgba(255, 183, 111, 0.16);
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .mapping-legend {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .legend-hot,
+      .legend-safe {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .legend-hot::before,
+      .legend-safe::before {
+        content: "";
+        width: 28px;
+        border-bottom: 3px solid currentColor;
+      }
+
+      .legend-hot {
+        color: var(--danger);
+      }
+
+      .legend-safe {
+        color: var(--safe);
+      }
+
+      .mapping-label {
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--accent-soft);
+        font-size: 11px;
+      }
+
+      .mapping-row {
+        padding: 12px 14px;
+        line-height: 1.6;
+        min-height: 48px;
+      }
+
+      .mark {
+        padding-bottom: 2px;
+        border-bottom: 3px solid currentColor;
+      }
+
+      .mark-hot {
+        color: #ffd2cf;
+        border-bottom-color: var(--danger);
+      }
+
+      .mark-safe {
+        color: #deffd9;
+        border-bottom-color: var(--safe);
+      }
+
+      pre {
+        margin: 0;
+        padding: 14px 16px;
+        color: var(--text);
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.6;
+        min-height: 72px;
+      }
+
+      #statusMessage {
+        min-height: 24px;
+      }
+
+      #statusMessage[data-state="error"] {
+        color: #ffd2cf;
+      }
+
+      #statusMessage[data-state="ok"] {
+        color: var(--accent-soft);
+      }
+
+      @media (max-width: 900px) {
+        .app-shell {
+          width: min(100% - 24px, 1160px);
+          padding-top: 16px;
+        }
+
+        .topline,
+        .hero-grid,
+        .mapping-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .topline {
+          gap: 8px;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
   </head>
   <body>
-    <h1>Privacy Filter Local</h1>
-    <textarea id="sourceText" rows="12" cols="80"></textarea>
-    <div>
-      <button id="redactButton" type="button">Redact</button>
-      <button id="copyButton" type="button">Copy Redacted Text</button>
-    </div>
-    <section>
-      <h2>Summary</h2>
-      <div id="riskLevel">risk: unknown</div>
-      <div id="spanCount">spans: 0</div>
-    </section>
-    <section>
-      <h2>Detections</h2>
-      <pre id="detectionList">[]</pre>
-    </section>
-    <pre id="redactedText"></pre>
+    <main class="app-shell">
+      <header class="topline">
+        <span>Privacy Filter Local</span>
+        <span>127.0.0.1 / local-only / review required</span>
+      </header>
+
+      <section class="hero-grid">
+        <section id="inputPanel" class="panel panel-primary">
+          <div class="section-label">Input Buffer</div>
+          <h1 class="hero-title">Inspect before the text leaves the machine.</h1>
+          <p class="hero-copy">
+            Review sensitive text locally, redact it, then copy the safe output.
+          </p>
+          <textarea id="sourceText" rows="12"></textarea>
+          <div class="control-row">
+            <button id="redactButton" type="button">Redact</button>
+            <button id="copyButton" type="button" class="secondary-action">Copy Redacted Text</button>
+          </div>
+        </section>
+
+        <aside id="riskPanel" class="panel panel-risk">
+          <div class="section-label">Risk</div>
+          <div class="risk-summary">
+            <span id="riskLevel">risk: unknown</span>
+            <span id="spanCount">spans: 0</span>
+          </div>
+          <p id="riskReason">No sensitive content detected yet.</p>
+        </aside>
+      </section>
+
+      <section id="nextStepPanel" class="panel">
+        <div class="section-label">Recommended Next Step</div>
+        <div id="recommendationList" class="recommendation-list">
+          <p class="recommendation-item">Run a redaction check to see what needs replacement before outbound use.</p>
+        </div>
+      </section>
+
+      <section id="replacementMapping" class="panel">
+        <div class="section-label">Replacement Mapping</div>
+        <div id="mappingLegend" class="mapping-legend">
+          <span class="legend-hot">红线 = 原文里将被替换掉的敏感内容</span>
+          <span class="legend-safe">绿线 = 脱敏后保留下来的安全占位符</span>
+        </div>
+        <div class="mapping-grid">
+          <div>
+            <div class="mapping-label">Source</div>
+            <div id="sourceMappingList" class="mapping-list">
+              <div class="mapping-row empty-state">Redaction results will appear here after a scan.</div>
+            </div>
+          </div>
+          <div>
+            <div class="mapping-label">Output</div>
+            <div id="outputMappingList" class="mapping-list">
+              <div class="mapping-row empty-state">Safe placeholders will appear here after a scan.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-label">Detections</div>
+        <pre id="detectionList">[]</pre>
+      </section>
+
+      <section class="panel">
+        <div class="section-label">Redacted Output</div>
+        <pre id="redactedText"></pre>
+        <div id="statusMessage" role="status" aria-live="polite"></div>
+      </section>
+    </main>
     <script>
-      document.getElementById("redactButton").addEventListener("click", async () => {
-        const text = document.getElementById("sourceText").value;
-        const response = await fetch("/redact", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text,
-            source: "manual_ui",
-            target: "ai_model",
-            mode: "warn"
-          })
-        });
-        const data = await response.json();
-        document.getElementById("riskLevel").textContent = `risk: ${data.risk_level}`;
-        document.getElementById("spanCount").textContent = `spans: ${data.spans.length}`;
-        document.getElementById("detectionList").textContent = JSON.stringify(data.spans, null, 2);
-        document.getElementById("redactedText").textContent = data.redacted_text;
+      const PLACEHOLDER_COPY = {
+        secret: "<SECRET>",
+        private_email: "<PRIVATE_EMAIL>",
+        private_phone: "<PRIVATE_PHONE>",
+        account_number: "<ACCOUNT_NUMBER>",
+        private_url: "<PRIVATE_URL>",
+        private_address: "<PRIVATE_ADDRESS>",
+        private_person: "<PRIVATE_PERSON>",
+        private_date: "<PRIVATE_DATE>"
+      };
+
+      const EXPLANATION_COPY = {
+        secret: "Detected secret. Replace it before sending externally.",
+        private_email: "Detected private email. Redact it if the text will leave local review.",
+        private_phone: "Detected private phone. Redact it before external sharing.",
+        account_number: "Detected account number. Replace it before the text leaves this machine.",
+        private_url: "Detected private URL. Redact it if the text will leave local review.",
+        private_address: "Detected private address. Redact it before external sharing.",
+        private_person: "Detected private person reference. Replace it before sharing externally.",
+        private_date: "Detected private date. Redact it if the text will leave local review.",
+        default: "Detected sensitive content. Keep only placeholders in outbound text."
+      };
+
+      const sourceText = document.getElementById("sourceText");
+      const redactButton = document.getElementById("redactButton");
+      const copyButton = document.getElementById("copyButton");
+      const statusMessage = document.getElementById("statusMessage");
+      const riskLevel = document.getElementById("riskLevel");
+      const spanCount = document.getElementById("spanCount");
+      const riskReason = document.getElementById("riskReason");
+      const recommendationList = document.getElementById("recommendationList");
+      const sourceMappingList = document.getElementById("sourceMappingList");
+      const outputMappingList = document.getElementById("outputMappingList");
+      const detectionList = document.getElementById("detectionList");
+      const redactedText = document.getElementById("redactedText");
+
+      function setStatus(message, isError = false) {
+        statusMessage.textContent = message;
+        statusMessage.dataset.state = isError ? "error" : "ok";
+      }
+
+      function getErrorMessage(error) {
+        if (error instanceof Error && error.message) {
+          return error.message;
+        }
+        return String(error);
+      }
+
+      function buildRecommendationMessage(spans, reason, riskLevelValue) {
+        if (!spans.length) {
+          return ["No sensitive content detected. Local review can continue."];
+        }
+
+        const labels = [...new Set(spans.map((span) => span.label))];
+        const messages = labels.map((label) => EXPLANATION_COPY[label] || EXPLANATION_COPY.default);
+
+        if (reason && !messages.includes(reason)) {
+          messages.push(`Why this is risky: ${reason}.`);
+        } else if (riskLevelValue === "high" && !messages.includes(EXPLANATION_COPY.default)) {
+          messages.push(EXPLANATION_COPY.default);
+        }
+
+        return messages;
+      }
+
+      function renderRecommendationList(spans, reason, riskLevelValue) {
+        const messages = buildRecommendationMessage(spans, reason, riskLevelValue);
+        recommendationList.innerHTML = "";
+
+        for (const message of messages) {
+          const item = document.createElement("p");
+          item.className = "recommendation-item";
+          item.textContent = message;
+          recommendationList.appendChild(item);
+        }
+      }
+
+      function createMappingRow(contentClass, text) {
+        const row = document.createElement("div");
+        row.className = "mapping-row";
+
+        const mark = document.createElement("span");
+        mark.className = `mark ${contentClass}`;
+        mark.textContent = text;
+        row.appendChild(mark);
+
+        return row;
+      }
+
+      function renderReplacementMapping(spans) {
+        sourceMappingList.innerHTML = "";
+        outputMappingList.innerHTML = "";
+
+        if (!spans.length) {
+          sourceMappingList.innerHTML = '<div class="mapping-row empty-state">No sensitive source spans found.</div>';
+          outputMappingList.innerHTML = '<div class="mapping-row empty-state">No placeholder replacements needed.</div>';
+          return;
+        }
+
+        for (const span of spans) {
+          sourceMappingList.appendChild(createMappingRow("mark-hot", span.text));
+          outputMappingList.appendChild(
+            createMappingRow("mark-safe", PLACEHOLDER_COPY[span.label] || "<REDACTED>")
+          );
+        }
+      }
+
+      function selectRedactedText() {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(redactedText);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      function copyWithFallback(text) {
+        const helper = document.createElement("textarea");
+        helper.value = text;
+        helper.setAttribute("readonly", "");
+        helper.style.position = "fixed";
+        helper.style.left = "-9999px";
+        document.body.appendChild(helper);
+        helper.focus();
+        helper.select();
+        helper.setSelectionRange(0, helper.value.length);
+        const copied = document.execCommand("copy");
+        document.body.removeChild(helper);
+        return copied;
+      }
+
+      function resetResultPanels() {
+        recommendationList.innerHTML = "";
+        sourceMappingList.innerHTML = "";
+        outputMappingList.innerHTML = "";
+      }
+
+      renderRecommendationList([], "", "unknown");
+      renderReplacementMapping([]);
+
+      redactButton.addEventListener("click", async () => {
+        const text = sourceText.value;
+        resetResultPanels();
+        setStatus("Redacting...");
+        redactButton.disabled = true;
+        try {
+          const response = await fetch("/redact", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text,
+              source: "manual_ui",
+              target: "ai_model",
+              mode: "warn"
+            })
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || `Request failed with status ${response.status}`);
+          }
+          const data = await response.json();
+          riskLevel.textContent = `risk: ${data.risk_level}`;
+          spanCount.textContent = `spans: ${data.spans.length}`;
+          riskReason.textContent = data.reason;
+          detectionList.textContent = JSON.stringify(data.spans, null, 2);
+          redactedText.textContent = data.redacted_text;
+          renderRecommendationList(data.spans, data.reason, data.risk_level);
+          renderReplacementMapping(data.spans);
+          setStatus("Redaction complete.");
+        } catch (error) {
+          setStatus(`Redaction failed: ${getErrorMessage(error)}`, true);
+        } finally {
+          redactButton.disabled = false;
+        }
       });
 
-      document.getElementById("copyButton").addEventListener("click", async () => {
-        await navigator.clipboard.writeText(document.getElementById("redactedText").textContent);
+      copyButton.addEventListener("click", async () => {
+        const text = redactedText.textContent;
+        if (!text) {
+          setStatus("Nothing to copy yet.", true);
+          return;
+        }
+
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            setStatus("Copied redacted text.");
+            return;
+          }
+        } catch (error) {
+          if (copyWithFallback(text)) {
+            setStatus("Copied redacted text.");
+            return;
+          }
+          selectRedactedText();
+          setStatus("Clipboard access is unavailable here. Redacted text is selected; press Cmd+C to copy.", true);
+          return;
+        }
+
+        if (copyWithFallback(text)) {
+          setStatus("Copied redacted text.");
+          return;
+        }
+
+        selectRedactedText();
+        setStatus("Copy failed. Select and copy manually.", true);
       });
     </script>
   </body>

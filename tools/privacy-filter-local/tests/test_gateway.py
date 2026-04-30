@@ -142,3 +142,63 @@ def test_redact_response_contains_decision_metadata() -> None:
     assert response.status_code == 200
     assert "decision" in response.json()
     assert "risk_level" in response.json()
+
+
+def test_redact_falls_back_to_regex_when_runtime_unavailable() -> None:
+    client = TestClient(app)
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": "token=sk-testsecretvalue1234567890",
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["spans"][0]["source"] == "regex"
+    assert "<SECRET>" in response.json()["redacted_text"]
+
+
+def test_root_ui_includes_status_feedback_and_copy_fallback() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="statusMessage"' in response.text
+    assert 'response.ok' in response.text
+    assert 'document.execCommand("copy")' in response.text
+
+
+def test_root_ui_includes_industrial_console_sections() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'class="app-shell"' in response.text
+    assert 'id="inputPanel"' in response.text
+    assert 'id="riskPanel"' in response.text
+    assert 'id="nextStepPanel"' in response.text
+    assert 'id="replacementMapping"' in response.text
+    assert "Input Buffer" in response.text
+    assert "Recommended Next Step" in response.text
+    assert "Replacement Mapping" in response.text
+
+
+def test_root_ui_includes_explanation_first_helpers() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "function buildRecommendationMessage" in response.text
+    assert "function renderReplacementMapping" in response.text
+    assert "Detected secret. Replace it before sending externally." in response.text
+    assert "Detected private email. Redact it if the text will leave local review." in response.text
+    assert "红线 = 原文里将被替换掉的敏感内容" in response.text
+    assert "绿线 = 脱敏后保留下来的安全占位符" in response.text
