@@ -352,19 +352,19 @@ def merge_spans(spans: list[dict[str, object]]) -> list[dict[str, object]]:
     return merged
 
 
-async def _detect_opf_async(text: str) -> tuple[list[dict[str, object]], float]:
-    """Run OPF in thread pool — non-blocking. Returns (spans, elapsed_seconds)."""
+async def _detect_opf_async(text: str) -> tuple[list[dict[str, object]], float, bool]:
+    """Run OPF in thread pool — non-blocking. Returns (spans, elapsed_seconds, opf_available)."""
     if len(text) < OPF_SKIP_THRESHOLD:
-        return [], 0.0
+        return [], 0.0, True
     loop = asyncio.get_event_loop()
     start = perf_counter()
     try:
         spans = await loop.run_in_executor(_opf_executor, detect_with_runtime, text)
         _mark_runtime_ready("request")
-        return spans, perf_counter() - start
+        return spans, perf_counter() - start, True
     except Exception as exc:
         logger.warning("OPF runtime unavailable, falling back to regex-only detection: %s", exc)
-        return [], perf_counter() - start
+        return [], perf_counter() - start, False
 
 
 def collect_spans(
@@ -490,7 +490,7 @@ def index() -> str:
 
 @app.post("/scan")
 async def scan(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/scan",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
@@ -499,23 +499,25 @@ async def scan(request: ScanRequest) -> dict[str, object]:
         "risk_level": decision["risk_level"],
         "summary": build_summary(spans),
         "recommended_action": decision["decision"],
+        "opf_available": opf_available,
         "timings": get_last_request_timing(),
     }
 
 
 @app.post("/decide")
 async def decide(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/decide",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
     decision["timings"] = get_last_request_timing()
+    decision["opf_available"] = opf_available
     return decision
 
 
 @app.post("/redact")
 async def redact(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/redact",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
@@ -525,6 +527,7 @@ async def redact(request: ScanRequest) -> dict[str, object]:
         "reason": decision["reason"],
         "spans": spans,
         "redacted_text": apply_redaction(request.text, spans),
+        "opf_available": opf_available,
         "timings": get_last_request_timing(),
     }
 
@@ -558,7 +561,7 @@ async def redact_file(
         if not text.strip():
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        opf_spans, opf_seconds = await _detect_opf_async(text)
+        opf_spans, opf_seconds, opf_available = await _detect_opf_async(text)
         spans = collect_spans(text, detection_mode, endpoint="/redact-file",
                               precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
         decision = decide_action(spans, source, target, mode)
@@ -573,6 +576,7 @@ async def redact_file(
             "spans": spans,
             "redacted_text": apply_redaction(text, spans),
             "summary": build_summary(spans),
+            "opf_available": opf_available,
             "timings": get_last_request_timing(),
         }
     finally:
@@ -620,7 +624,7 @@ async def redact_file_download(
         if not text.strip():
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        opf_spans, opf_seconds = await _detect_opf_async(text)
+        opf_spans, opf_seconds, _opf_av = await _detect_opf_async(text)
         spans = collect_spans(text, detection_mode, endpoint="/redact-file/download",
                               precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
 
