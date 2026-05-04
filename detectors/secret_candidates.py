@@ -51,6 +51,8 @@ def generate_secret_candidates(text: str) -> list[dict[str, object]]:
             fragment_candidates = _candidate_for_json_yaml(text, fragment)
         elif structure_kind == "log_sentence":
             fragment_candidates = _candidate_for_log_sentence(text, fragment)
+        elif structure_kind == "yaml_block_scalar":
+            fragment_candidates = _candidate_for_yaml_block(text, fragment)
         else:
             fragment_candidates = []
 
@@ -187,6 +189,24 @@ def _candidate_for_log_sentence(text: str, fragment: dict[str, object]) -> list[
         return []
 
     return [_build_candidate(span, text, "verification_code", 0.65, ["structure_match", "context_match"])]
+
+
+def _candidate_for_yaml_block(text: str, fragment: dict[str, object]) -> list[dict[str, object]]:
+    """Handle YAML block scalar (| and > style) multi-line values."""
+    value = fragment.get("value")
+    value_start = fragment.get("value_start")
+    value_end = fragment.get("value_end")
+    if not isinstance(value, str) or not isinstance(value_start, int) or not isinstance(value_end, int):
+        return []
+
+    span = (value_start, value_end)
+
+    # Reuse the same scoring logic as json_yaml_pair by constructing a minimal
+    # value_span-compatible fragment and delegating to _candidate_for_json_yaml.
+    synthetic = dict(fragment)
+    synthetic["value_span"] = span
+    synthetic["structure_kind"] = "json_yaml_pair"
+    return _candidate_for_json_yaml(text, synthetic)
 
 
 def _build_candidate(
