@@ -4,12 +4,17 @@ from detectors.structured_parser import parse_structured_fragments
 
 
 API_KEY_PATTERN = re.compile(
-    r"^(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{20,}|hf_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16})$"
+    r"^(?:sk[-_][A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{20,}|hf_[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})$"
 )
 JWT_PATTERN = re.compile(r"^eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$")
-DB_PATTERN = re.compile(
-    r"^(?:postgres|postgresql|mysql|mongodb):\/\/[^:\s]+:[^@\s]+@[^\/\s]+\/[^\s]+$",
+DB_CONNECTION_PATTERN = re.compile(
+    r"^(?P<prefix>(?:postgres|postgresql|mysql|mongodb(?:\+srv)?):\/\/[^:\s]+:)"
+    r"(?P<password>[^@\s]+)"
+    r"(?P<suffix>@[^\/\s]+\/[^\s]+)$",
     re.IGNORECASE,
+)
+PEM_VALUE_PATTERN = re.compile(
+    r"^-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\\n)|\n)[\s\S]+?(?:(?:\\n)|\n)-----END [A-Z ]*PRIVATE KEY-----$"
 )
 TOKEN_KEY_NAMES = {
     "token",
@@ -62,8 +67,20 @@ def _candidate_for_assignment(text: str, fragment: dict[str, object]) -> list[di
     if API_KEY_PATTERN.match(value):
         return [_build_candidate(span, text, "api_key", 0.9, ["structure_match", "value_shape_match"])]
 
-    if DB_PATTERN.match(value):
-        return [_build_candidate(span, text, "db_connection", 0.9, ["structure_match", "value_shape_match"])]
+    db_password_span = _db_password_span(span, value)
+    if db_password_span is not None:
+        return [_build_candidate(db_password_span, text, "db_connection", 0.9, ["structure_match", "value_shape_match"])]
+
+    if _looks_like_private_key_value(value):
+        return [
+            _build_candidate(
+                span,
+                text,
+                "private_key",
+                0.95,
+                ["structure_match", "key_name_match", "pem_block_match"],
+            )
+        ]
 
     if _is_token_key(fragment) and _looks_like_token_value(value):
         return [
@@ -106,7 +123,19 @@ def _candidate_for_cookie_pair(text: str, fragment: dict[str, object]) -> list[d
         return []
 
     if cookie_name.lower() not in SESSION_COOKIE_NAMES:
-        return []
+        if cookie_name.lower() not in TOKEN_KEY_NAMES:
+            return []
+        if not _looks_like_token_value(value):
+            return []
+        return [
+            _build_candidate(
+                span,
+                text,
+                "token",
+                0.75,
+                ["structure_match", "key_name_match", "value_shape_match"],
+            )
+        ]
 
     if not _looks_like_session_cookie_value(value):
         return []
@@ -121,6 +150,21 @@ def _candidate_for_json_yaml(text: str, fragment: dict[str, object]) -> list[dic
 
     if API_KEY_PATTERN.match(value):
         return [_build_candidate(span, text, "api_key", 0.9, ["structure_match", "value_shape_match"])]
+
+    db_password_span = _db_password_span(span, value)
+    if db_password_span is not None:
+        return [_build_candidate(db_password_span, text, "db_connection", 0.9, ["structure_match", "value_shape_match"])]
+
+    if _looks_like_private_key_value(value):
+        return [
+            _build_candidate(
+                span,
+                text,
+                "private_key",
+                0.95,
+                ["structure_match", "key_name_match", "pem_block_match"],
+            )
+        ]
 
     if _is_token_key(fragment) and _looks_like_token_value(value):
         return [
@@ -192,3 +236,16 @@ def _looks_like_token_value(value: str) -> bool:
 
 def _looks_like_session_cookie_value(value: str) -> bool:
     return len(value) >= 8 and bool(re.fullmatch(r"[A-Za-z0-9._-]+", value))
+
+
+def _db_password_span(value_span: tuple[int, int], value: str) -> tuple[int, int] | None:
+    match = DB_CONNECTION_PATTERN.match(value)
+    if not match:
+        return None
+
+    start, _ = value_span
+    return (start + match.start("password"), start + match.end("password"))
+
+
+def _looks_like_private_key_value(value: str) -> bool:
+    return bool(PEM_VALUE_PATTERN.match(value))

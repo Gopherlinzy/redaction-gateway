@@ -242,3 +242,71 @@ def test_parses_log_sentence_candidate_span() -> None:
             "context_span": (0, 20),
         }
     ]
+
+
+def test_parses_diff_add_line_as_assignment() -> None:
+    text = "+OPENAI_API_KEY=sk-testsecret1234567890"
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0]["structure_kind"] == "assignment"
+    assert fragments[0]["key"] == "OPENAI_API_KEY"
+    assert fragments[0]["value"] == "sk-testsecret1234567890"
+
+
+def test_parses_diff_remove_line_as_assignment() -> None:
+    text = "-OLD_KEY=sk-oldsecretvalue123456789"
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0]["structure_kind"] == "assignment"
+    assert fragments[0]["key"] == "OLD_KEY"
+    assert fragments[0]["value"] == "sk-oldsecretvalue123456789"
+
+
+def test_parses_diff_context_line_as_assignment() -> None:
+    text = " API_KEY=sk-contextsecret12345678"
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0]["structure_kind"] == "assignment"
+    assert fragments[0]["key"] == "API_KEY"
+    assert fragments[0]["value"] == "sk-contextsecret12345678"
+
+
+def test_parses_compressed_json_extracts_all_pairs() -> None:
+    text = '{"access_token":"ya29abc123def456","refresh_token":"1token789xyz012345"}'
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 2
+    keys = {f["key"] for f in fragments}
+    assert keys == {"access_token", "refresh_token"}
+    for f in fragments:
+        assert f["structure_kind"] == "json_yaml_pair"
+        assert f["container_kind"] == "json"
+
+
+def test_parses_x_api_key_header() -> None:
+    text = "X-API-Key: sk_live_abc123defghijklmnopqrst"
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0]["structure_kind"] == "http_header"
+    assert fragments[0]["header_name"] == "X-API-Key"
+    assert fragments[0]["value"] == "sk_live_abc123defghijklmnopqrst"
+
+
+def test_parses_x_auth_token_header() -> None:
+    text = "X-Auth-Token: sometoken12345678abcdef"
+
+    fragments = parse_structured_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0]["structure_kind"] == "http_header"
+    assert fragments[0]["header_name"] == "X-Auth-Token"
+    assert fragments[0]["value"] == "sometoken12345678abcdef"

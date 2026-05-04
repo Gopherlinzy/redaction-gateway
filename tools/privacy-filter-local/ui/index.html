@@ -4,24 +4,32 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Privacy Filter Local</title>
+    <!-- pdf.js for PDF in-browser rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs" type="module" id="pdfjs-script"></script>
+    <!-- JSZip (required by docx-preview) + docx-preview for DOCX in-browser rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.7/dist/docx-preview.min.js"></script>
     <style>
       :root {
         --bg: #090a0c;
-        --bg-glow: rgba(255, 124, 34, 0.12);
+        --bg-glow: rgba(255, 124, 34, 0.14);
         --panel: rgba(255, 255, 255, 0.035);
         --panel-border: rgba(255, 183, 111, 0.22);
         --panel-strong: rgba(255, 183, 111, 0.34);
         --text: #efe8dc;
         --muted: rgba(239, 232, 220, 0.72);
+        --muted-strong: rgba(239, 232, 220, 0.88);
         --accent: #ff7c22;
         --accent-soft: #ffb76f;
         --danger: #ff5f57;
         --safe: #65d46e;
+        --surface-height-lg: clamp(260px, 42vh, 420px);
+        --surface-height-md: clamp(180px, 28vh, 260px);
+        --preview-height: clamp(400px, 60vh, 720px);
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
 
       body {
         margin: 0;
@@ -38,22 +46,22 @@
         content: "";
         position: fixed;
         inset: 0;
+        pointer-events: none;
+        opacity: 0.35;
         background:
           linear-gradient(transparent 0, transparent 23px, rgba(255, 255, 255, 0.03) 24px),
           linear-gradient(90deg, transparent 0, transparent 23px, rgba(255, 255, 255, 0.02) 24px);
         background-size: 24px 24px;
-        pointer-events: none;
-        opacity: 0.35;
       }
 
       .app-shell {
         position: relative;
         z-index: 1;
-        width: min(1160px, calc(100% - 32px));
+        width: min(1220px, calc(100% - 32px));
         margin: 0 auto;
-        padding: 24px 0 32px;
+        padding: 24px 0 40px;
         display: grid;
-        gap: 16px;
+        gap: 18px;
       }
 
       .topline {
@@ -66,88 +74,155 @@
         font-size: 11px;
       }
 
-      .hero-grid,
-      .mapping-grid {
-        display: grid;
-        grid-template-columns: 1.35fr 0.95fr;
-        gap: 16px;
+      .status-banner {
+        min-height: 22px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
       }
+
+      .status-banner[data-state="error"] { color: #ffd2cf; }
+      .status-banner[data-state="ok"] { color: var(--accent-soft); }
+
+      .view { display: none; }
+      .view.is-active { display: grid; gap: 16px; }
 
       .panel {
         border: 1px solid var(--panel-border);
         background: var(--panel);
-        padding: 16px;
-        display: grid;
-        gap: 12px;
+        padding: 18px;
       }
 
-      .panel-primary {
-        gap: 14px;
-      }
-
-      .panel-risk {
-        border-left: 4px solid var(--accent);
-        background: linear-gradient(90deg, rgba(255, 124, 34, 0.18), rgba(255, 255, 255, 0.03));
-      }
-
-      .section-label {
+      .section-label,
+      .mapping-label {
         letter-spacing: 0.12em;
         text-transform: uppercase;
         color: var(--accent-soft);
         font-size: 11px;
       }
 
-      .hero-title {
-        margin: 0;
-        font-size: clamp(30px, 5vw, 46px);
-        line-height: 0.98;
-        max-width: 12ch;
-      }
-
       .hero-copy,
       .recommendation-item,
       #riskReason,
-      #statusMessage,
-      .empty-state {
+      .empty-state,
+      .helper-copy {
         color: var(--muted);
         line-height: 1.6;
         font-size: 14px;
       }
 
-      textarea,
-      pre,
-      .mapping-row {
-        border: 1px solid var(--panel-border);
-        background: rgba(0, 0, 0, 0.26);
+      .home-panel { padding: 0; overflow: hidden; }
+
+      .home-grid {
+        display: grid;
+        grid-template-columns: 1.55fr 0.45fr;
+        gap: 0;
       }
 
-      textarea {
-        width: 100%;
-        min-height: 240px;
-        padding: 14px 16px;
-        color: var(--text);
-        font: inherit;
-        resize: vertical;
+      .home-main { padding: 24px; display: grid; gap: 16px; }
+
+      .home-side {
+        border-left: 1px solid rgba(255, 183, 111, 0.16);
+        background: linear-gradient(180deg, rgba(255, 124, 34, 0.12), rgba(0, 0, 0, 0.08));
+        padding: 24px;
+        display: grid;
+        gap: 18px;
+        align-content: start;
       }
 
-      .control-row {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
+      .hero-title {
+        margin: 0;
+        max-width: none;
+        color: #ffffff;
+        font-size: clamp(24px, 2.35vw, 32px);
+        line-height: 0.94;
+        letter-spacing: -0.05em;
+        white-space: nowrap;
       }
 
-      .mode-panel {
+      .home-side h2 { margin: 0; color: #fffdf9; font-size: 22px; line-height: 1.1; }
+
+      .flow-list { display: grid; gap: 12px; }
+
+      .flow-item {
+        border: 1px solid rgba(255, 183, 111, 0.16);
+        background: rgba(0, 0, 0, 0.12);
+        padding: 12px 14px;
         display: grid;
         gap: 8px;
       }
 
-      select {
+      .flow-item strong {
+        color: var(--accent-soft);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .flow-item p { margin: 0; color: var(--muted); line-height: 1.6; font-size: 14px; }
+
+      textarea, select, pre, .mapping-surface {
         width: 100%;
-        padding: 12px 14px;
         border: 1px solid var(--panel-border);
         background: rgba(0, 0, 0, 0.26);
         color: var(--text);
         font: inherit;
+      }
+
+      textarea {
+        height: var(--surface-height-lg);
+        min-height: var(--surface-height-lg);
+        max-height: var(--surface-height-lg);
+        padding: 16px;
+        overflow: auto;
+        resize: none;
+      }
+
+      select { padding: 12px 14px; }
+
+      .mode-panel { display: grid; gap: 8px; }
+      .control-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+      .ingest-panel {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid rgba(255, 183, 111, 0.16);
+        background: rgba(0, 0, 0, 0.14);
+      }
+
+      .ingest-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .ingest-copy { display: grid; gap: 6px; min-width: min(100%, 320px); }
+
+      .file-meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+      /* Drop zone */
+      .drop-zone {
+        border: 1px dashed rgba(255, 183, 111, 0.4);
+        background: rgba(255, 124, 34, 0.04);
+        padding: 20px;
+        text-align: center;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+
+      .drop-zone.drag-over {
+        border-color: var(--accent);
+        background: rgba(255, 124, 34, 0.10);
+      }
+
+      .drop-zone-hint {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 0;
+        pointer-events: none;
       }
 
       button {
@@ -155,7 +230,7 @@
         border: 1px solid var(--accent);
         background: transparent;
         color: var(--text);
-        padding: 12px 14px;
+        padding: 12px 16px;
         font: inherit;
         text-transform: uppercase;
         letter-spacing: 0.12em;
@@ -163,18 +238,324 @@
         min-width: 180px;
       }
 
-      button:hover:not(:disabled) {
-        border-color: var(--accent-soft);
+      button:hover:not(:disabled) { border-color: var(--accent-soft); }
+      button:disabled { opacity: 0.45; cursor: progress; }
+
+      .button-primary {
+        background: linear-gradient(180deg, rgba(255, 124, 34, 0.25), rgba(255, 124, 34, 0.10));
       }
 
-      button:disabled {
-        opacity: 0.45;
-        cursor: progress;
+      .secondary-action { border-color: rgba(239, 232, 220, 0.28); color: var(--muted); }
+
+      .review-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        flex-wrap: wrap;
       }
 
-      .secondary-action {
-        border-color: rgba(239, 232, 220, 0.28);
+      .review-header-copy { display: grid; gap: 10px; }
+      .review-title { margin: 0; font-size: 28px; line-height: 1; }
+
+      .review-meta {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
         color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+
+      .review-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+      .review-primary { display: grid; gap: 16px; }
+
+      /* ── Stats panel ────────────────────────────────────────────────── */
+      #statsPanel { display: grid; gap: 12px; }
+      .stats-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: baseline; }
+      .stats-chip {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .stats-chip-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--accent-soft);
+        line-height: 1;
+      }
+      .stats-chip-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+      .stats-bar {
+        height: 6px;
+        background: rgba(255,255,255,0.07);
+        border-radius: 3px;
+        overflow: hidden;
+        display: flex;
+      }
+      .stats-bar-seg {
+        height: 100%;
+        transition: width 0.3s ease;
+      }
+      .stats-cats { display: flex; gap: 8px; flex-wrap: wrap; }
+      .stats-cat-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+        border: 1px solid currentColor;
+        opacity: 0.85;
+      }
+      .stats-cat-chip .swatch {
+        width: 8px; height: 8px;
+        border-radius: 2px;
+        flex-shrink: 0;
+      }
+
+      /* ── Category sidebar ───────────────────────────────────────────── */
+      #catSidebar { display: grid; gap: 10px; }
+      .cat-sidebar-controls { display: flex; gap: 8px; }
+      .cat-sidebar-controls button {
+        appearance: none;
+        padding: 4px 10px;
+        border: 1px solid rgba(239, 232, 220, 0.28);
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .cat-sidebar-controls button:hover { border-color: var(--accent); color: var(--accent); }
+      #catList { display: flex; gap: 6px; flex-wrap: wrap; }
+      .cat-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-size: 12px;
+        cursor: pointer;
+        border: 1px solid currentColor;
+        background: transparent;
+        font-family: inherit;
+        transition: opacity 0.15s;
+      }
+      .cat-toggle .swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+      .cat-toggle.is-off {
+        opacity: 0.4;
+        text-decoration: line-through;
+        border-style: dashed;
+        color: var(--text-muted, #888) !important;
+      }
+      .cat-toggle.is-off .swatch { opacity: 0.3; }
+      .cat-toggle:hover { opacity: 1; }
+
+      /* Span that is preserved (not redacted) in the redacted pane */
+      .entity.preserved {
+        background: transparent;
+        border-bottom: 2px dashed currentColor;
+        border-radius: 0;
+        opacity: 0.6;
+        font-style: italic;
+      }
+      /* Clickable spans in input inspector */
+      #inputInspector .entity { cursor: pointer; }
+      #inputInspector .entity:hover { filter: brightness(1.15); }
+
+      .before-after-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        color: var(--accent-soft);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 12px;
+      }
+
+      .mapping-flow-label {
+        color: var(--muted);
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+      }
+
+      .mapping-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+
+      .legend-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .legend-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        background: var(--entity-fill);
+        box-shadow: inset 0 -2px 0 var(--entity-line);
+      }
+
+      .mapping-compare-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .mapping-card { display: grid; gap: 8px; grid-template-rows: auto 1fr; min-height: 0; }
+      .mapping-card:first-child .mapping-surface { border-left: 3px solid var(--accent-soft); }
+      .mapping-card:last-child  .mapping-surface { border-left: 3px solid var(--safe); }
+
+      .mapping-surface {
+        min-height: 160px;
+        max-height: 520px;
+        padding: 18px 20px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        line-height: 1.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        overflow: auto;
+      }
+
+      /* ── File compare grid ──────────────────────────────────────────── */
+      .file-compare-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        align-items: start;
+      }
+      .file-pane { display: grid; gap: 8px; }
+      .file-pane-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--accent-soft);
+      }
+      .file-preview-viewport {
+        height: var(--preview-height);
+        overflow: auto;
+        border: 1px solid var(--panel-border);
+        background: #fff;
+        position: relative;
+      }
+      .file-preview-viewport canvas { display: block; margin: 0 auto; }
+      .file-preview-viewport .docx-pane {
+        padding: 24px 32px;
+        font-family: serif;
+        font-size: 14px;
+        color: #111;
+        min-height: 100%;
+      }
+      .file-preview-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: #888;
+        font-size: 13px;
+        font-family: "SF Mono", monospace;
+        padding: 24px;
+        text-align: center;
+      }
+      @media (max-width: 960px) {
+        .file-compare-grid { grid-template-columns: 1fr; }
+        .mapping-compare-grid { grid-template-columns: 1fr; }
+      }
+
+      .entity {
+        --entity-line: rgba(255, 183, 111, 0.7);
+        --entity-fill: rgba(255, 183, 111, 0.14);
+        display: inline;
+        padding: 0 3px 2px;
+        border-bottom: 2px solid var(--entity-line);
+        background: linear-gradient(180deg, transparent 0%, transparent 22%, var(--entity-fill) 22%, var(--entity-fill) 100%);
+        border-radius: 4px;
+      }
+
+      .entity-output {
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+      }
+
+      .entity-private_person { --entity-line: #f25b5b; --entity-fill: rgba(242, 91, 91, 0.18); }
+      .entity-private_address { --entity-line: #2fb49c; --entity-fill: rgba(47, 180, 156, 0.18); }
+      .entity-private_email { --entity-line: #4b98f0; --entity-fill: rgba(75, 152, 240, 0.18); }
+      .entity-private_phone { --entity-line: #82b83b; --entity-fill: rgba(130, 184, 59, 0.18); }
+      .entity-private_url { --entity-line: #e1773b; --entity-fill: rgba(225, 119, 59, 0.18); }
+      .entity-private_date { --entity-line: #8a7cf4; --entity-fill: rgba(138, 124, 244, 0.18); }
+      .entity-account_number { --entity-line: #cf8a14; --entity-fill: rgba(207, 138, 20, 0.18); }
+      .entity.off { background: transparent !important; border-color: transparent !important; box-shadow: none !important; }
+
+      .entity-secret { --entity-line: #d9588a; --entity-fill: rgba(217, 88, 138, 0.18); }
+
+      pre {
+        margin: 0;
+        height: var(--surface-height-md);
+        min-height: var(--surface-height-md);
+        max-height: var(--surface-height-md);
+        padding: 14px 16px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.6;
+        overflow: auto;
+      }
+
+      .inspector-shell { display: grid; gap: 14px; }
+      .inspector-tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+
+      .inspector-tab {
+        appearance: none;
+        padding: 7px 11px;
+        border: 1px solid rgba(255, 183, 111, 0.18);
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        cursor: pointer;
+        min-width: 0;
+      }
+
+      .inspector-tab.is-active {
+        border-color: var(--accent);
+        background: rgba(255, 124, 34, 0.12);
+        color: var(--text);
+      }
+
+      .inspector-panels { display: grid; }
+
+      .inspector-panel {
+        border: 1px solid rgba(255, 183, 111, 0.14);
+        background: rgba(0, 0, 0, 0.16);
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .inspector-panel[hidden] { display: none !important; }
+
+      .panel-risk {
+        border-left: 4px solid var(--accent);
+        background: linear-gradient(90deg, rgba(255, 124, 34, 0.12), rgba(255, 255, 255, 0.02));
       }
 
       .risk-summary {
@@ -185,23 +566,10 @@
         flex-wrap: wrap;
       }
 
-      #riskLevel {
-        font-size: 28px;
-        color: var(--text);
-      }
+      #riskLevel { font-size: 28px; color: var(--text); }
+      #spanCount { color: var(--accent-soft); text-transform: uppercase; letter-spacing: 0.12em; font-size: 12px; }
 
-      #spanCount {
-        color: var(--accent-soft);
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        font-size: 12px;
-      }
-
-      .recommendation-list,
-      .mapping-list {
-        display: grid;
-        gap: 10px;
-      }
+      .recommendation-list { display: grid; gap: 10px; }
 
       .recommendation-item {
         margin: 0;
@@ -210,107 +578,72 @@
         background: rgba(255, 255, 255, 0.02);
       }
 
-      .mapping-legend {
+      .debug-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .debug-card { display: grid; gap: 8px; }
+      .debug-meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+      .empty-state { display: block; }
+
+      /* ── PDF / DOCX rendering shared utilities ──────────────────────── */
+
+      /* PDF page navigation */
+      .pdf-nav {
         display: flex;
-        gap: 16px;
-        flex-wrap: wrap;
-        color: var(--muted);
+        gap: 8px;
+        align-items: center;
+      }
+
+      .pdf-nav button {
+        min-width: 0;
+        padding: 8px 14px;
         font-size: 12px;
       }
 
-      .legend-hot,
-      .legend-safe {
-        display: inline-flex;
+      .pdf-page-indicator {
+        color: var(--muted);
+        font-size: 12px;
+        min-width: 80px;
+        text-align: center;
+      }
+
+      .doc-preview-loading {
+        display: flex;
         align-items: center;
-        gap: 8px;
+        justify-content: center;
+        height: 100%;
+        gap: 10px;
+        color: #888;
+        font-size: 13px;
+        font-family: "SF Mono", monospace;
       }
 
-      .legend-hot::before,
-      .legend-safe::before {
-        content: "";
-        width: 28px;
-        border-bottom: 3px solid currentColor;
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(255, 183, 111, 0.3);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        flex-shrink: 0;
       }
 
-      .legend-hot {
-        color: var(--danger);
-      }
+      @keyframes spin { to { transform: rotate(360deg); } }
 
-      .legend-safe {
-        color: var(--safe);
-      }
-
-      .mapping-label {
-        margin-bottom: 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        color: var(--accent-soft);
-        font-size: 11px;
-      }
-
-      .mapping-row {
-        padding: 12px 14px;
-        line-height: 1.6;
-        min-height: 48px;
-      }
-
-      .mark {
-        padding-bottom: 2px;
-        border-bottom: 3px solid currentColor;
-      }
-
-      .mark-hot {
-        color: #ffd2cf;
-        border-bottom-color: var(--danger);
-      }
-
-      .mark-safe {
-        color: #deffd9;
-        border-bottom-color: var(--safe);
-      }
-
-      pre {
-        margin: 0;
-        padding: 14px 16px;
-        color: var(--text);
-        white-space: pre-wrap;
-        word-break: break-word;
-        overflow-wrap: anywhere;
-        line-height: 1.6;
-        min-height: 72px;
-      }
-
-      #statusMessage {
-        min-height: 24px;
-      }
-
-      #statusMessage[data-state="error"] {
-        color: #ffd2cf;
-      }
-
-      #statusMessage[data-state="ok"] {
-        color: var(--accent-soft);
-      }
-
-      @media (max-width: 900px) {
-        .app-shell {
-          width: min(100% - 24px, 1160px);
-          padding-top: 16px;
-        }
+      /* ── Responsive ─────────────────────────────────────────────────────── */
+      @media (max-width: 960px) {
+        .app-shell { width: min(100% - 24px, 1220px); padding-top: 16px; }
 
         .topline,
-        .hero-grid,
-        .mapping-grid {
-          grid-template-columns: 1fr;
-        }
+        .home-grid,
+        .mapping-compare-grid,
+        .debug-grid { grid-template-columns: 1fr; }
 
-        .topline {
-          gap: 8px;
-        }
+        .home-side { border-left: 0; border-top: 1px solid rgba(255, 183, 111, 0.16); }
 
-        button {
-          width: 100%;
-        }
+        .hero-title { max-width: 10ch; font-size: clamp(34px, 8vw, 56px); white-space: normal; }
+
+        button { width: 100%; }
+        .review-actions { width: 100%; }
+        .pdf-nav button { min-width: 0; width: auto; }
       }
     </style>
   </head>
@@ -321,85 +654,269 @@
         <span>127.0.0.1 / local-only / review required</span>
       </header>
 
-      <section class="hero-grid">
-        <section id="inputPanel" class="panel panel-primary">
-          <div class="section-label">Input Buffer</div>
-          <h1 class="hero-title">Inspect before the text leaves the machine.</h1>
-          <p class="hero-copy">
-            Review sensitive text locally, redact it, then copy the safe output.
-          </p>
-          <textarea id="sourceText" rows="12"></textarea>
-          <div class="mode-panel">
-            <label class="mapping-label" for="detectionMode">Detection Mode</label>
-            <select id="detectionMode">
-              <option value="high_recall">High Recall</option>
-              <option value="balanced" selected>Balanced</option>
-              <option value="high_precision">High Precision</option>
-            </select>
-            <p id="modeDescription" class="hero-copy"></p>
+      <div id="statusMessage" class="status-banner" role="status" aria-live="polite"></div>
+
+      <!-- ── Home View ──────────────────────────────────────────────────── -->
+      <section id="homeView" class="view is-active">
+        <section id="inputPanel" class="panel home-panel">
+          <div class="home-grid">
+            <div class="home-main">
+              <div class="section-label">Input Buffer</div>
+              <h1 class="hero-title">Inspect before the text leaves the machine.</h1>
+              <p class="hero-copy">
+                Review sensitive text locally before it reaches a read tool or chat surface. The first step is awareness; the next step is safe redaction.
+              </p>
+              <textarea id="sourceText" rows="12" aria-label="Source text to scan"></textarea>
+
+              <!-- File upload: drag & drop + browse -->
+              <div
+                id="dropZone"
+                class="drop-zone"
+                role="button"
+                tabindex="0"
+                aria-label="Upload PDF or DOCX file — click or drag and drop"
+              >
+                <p class="drop-zone-hint">
+                  Drop PDF or DOCX here, or click to browse
+                  <span id="selectedFileName" style="display:block;margin-top:6px;color:var(--accent-soft)"></span>
+                </p>
+                <input id="fileInput" type="file" accept=".pdf,.docx" hidden aria-hidden="true">
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <button id="fileClearButton" type="button" class="secondary-action" hidden style="min-width:0">Clear File</button>
+              </div>
+
+              <div class="mode-panel">
+                <label class="mapping-label" for="detectionMode">Detection Mode</label>
+                <select id="detectionMode">
+                  <option value="high_recall">High Recall</option>
+                  <option value="balanced" selected>Balanced</option>
+                  <option value="high_precision">High Precision</option>
+                </select>
+                <p id="modeDescription" class="hero-copy"></p>
+              </div>
+              <div class="control-row">
+                <button id="redactButton" type="button" class="button-primary">Review Redaction</button>
+              </div>
+            </div>
+
+            <aside class="home-side">
+              <div class="section-label">Interceptor Flow</div>
+              <h2>One entry. One review gate. One safe outbound copy.</h2>
+              <div class="flow-list">
+                <div class="flow-item">
+                  <strong>Step 1 · Home</strong>
+                  <p>Paste text or drop a PDF / DOCX, choose a detection mode, and launch a local review.</p>
+                </div>
+                <div class="flow-item">
+                  <strong>Step 2 · Review</strong>
+                  <p>Compare Input Highlight → Redacted. For files, use the Document Preview tab to see the redacted document in its original format.</p>
+                </div>
+                <div class="flow-item">
+                  <strong>Step 3 · Continue</strong>
+                  <p>Copy masked text or download the redacted file only after you have confirmed the findings.</p>
+                </div>
+              </div>
+            </aside>
           </div>
-          <div class="control-row">
-            <button id="redactButton" type="button">Redact</button>
-            <button id="copyButton" type="button" class="secondary-action">Copy Redacted Text</button>
+        </section>
+      </section>
+
+      <!-- ── Review View ────────────────────────────────────────────────── -->
+      <section id="reviewView" class="view">
+        <section class="panel review-header">
+          <div class="review-header-copy">
+            <div class="section-label">Redacted Review</div>
+            <h2 class="review-title">Input Highlight → Redacted</h2>
+            <div class="review-meta">
+              <span id="reviewSourceMeta">text buffer</span>
+              <span>user confirmation first</span>
+              <span>copy masked output only</span>
+              <span id="reviewFileMeta" hidden>pdf / docx review</span>
+            </div>
+          </div>
+          <div class="review-actions">
+            <button id="copyButton" type="button">Copy Redacted Text</button>
+            <button id="downloadFileButton" type="button" class="secondary-action" hidden>Download Redacted File</button>
+            <button id="backButton" type="button" class="secondary-action">Review Another Text</button>
           </div>
         </section>
 
-        <aside id="riskPanel" class="panel panel-risk">
-          <div class="section-label">Risk</div>
-          <div class="risk-summary">
-            <span id="riskLevel">risk: unknown</span>
-            <span id="spanCount">spans: 0</span>
-          </div>
-          <p id="riskReason">No sensitive content detected yet.</p>
-        </aside>
-      </section>
-
-      <section id="nextStepPanel" class="panel">
-        <div class="section-label">Recommended Next Step</div>
-        <div class="mapping-label">Primary Risk</div>
-        <div id="primaryRiskList" class="recommendation-list">
-          <p class="recommendation-item">Run a redaction check to inspect secrets before outbound use.</p>
-        </div>
-        <div class="mapping-label">Secondary Signals</div>
-        <div id="secondarySignalsList" class="recommendation-list">
-          <p class="recommendation-item">PII findings will appear here after a scan.</p>
-        </div>
-      </section>
-
-      <section id="replacementMapping" class="panel">
-        <div class="section-label">Replacement Mapping</div>
-        <div id="mappingLegend" class="mapping-legend">
-          <span class="legend-hot">红线 = 原文里将被替换掉的敏感内容</span>
-          <span class="legend-safe">绿线 = 脱敏后保留下来的安全占位符</span>
-        </div>
-        <div class="mapping-grid">
-          <div>
-            <div class="mapping-label">Source</div>
-            <div id="sourceMappingList" class="mapping-list">
-              <div class="mapping-row empty-state">Redaction results will appear here after a scan.</div>
+        <section id="statsPanel" class="panel" hidden>
+          <div class="stats-row">
+            <div class="stats-chip">
+              <span class="stats-chip-value" id="statsPiiPct">0%</span>
+              <span class="stats-chip-label">PII content</span>
+            </div>
+            <div class="stats-chip">
+              <span class="stats-chip-value" id="statsSpanCount">0</span>
+              <span class="stats-chip-label">spans detected</span>
+            </div>
+            <div class="stats-chip">
+              <span class="stats-chip-value" id="statsCatCount">0</span>
+              <span class="stats-chip-label">categories</span>
             </div>
           </div>
-          <div>
-            <div class="mapping-label">Output</div>
-            <div id="outputMappingList" class="mapping-list">
-              <div class="mapping-row empty-state">Safe placeholders will appear here after a scan.</div>
+          <div class="stats-bar" id="statsBar" role="meter" aria-label="PII category distribution"></div>
+          <div class="stats-cats" id="statsCats"></div>
+        </section>
+
+        <section id="catSidebar" class="panel" hidden>
+          <div class="cat-sidebar-controls">
+            <button id="catSelectAll" type="button">Select all</button>
+            <button id="catClearAll" type="button">Clear all</button>
+          </div>
+          <div id="catList" role="list" aria-label="Category toggles"></div>
+        </section>
+
+        <!-- File mode: side-by-side original / redacted document preview -->
+        <section id="fileComparePanel" class="panel review-primary" hidden>
+          <div class="before-after-label">
+            <span>Original ↔ Redacted</span>
+            <span class="mapping-flow-label">左侧原始文件，右侧脱敏版本。密钥已被物理删除/替换。</span>
+          </div>
+          <div class="file-compare-grid">
+            <div class="file-pane">
+              <div class="file-pane-label">Original</div>
+              <div class="file-preview-viewport" id="origPreviewViewport">
+                <canvas id="origPdfCanvas" hidden></canvas>
+                <div class="docx-pane" id="origDocxContainer" hidden></div>
+                <div class="file-preview-placeholder" id="origPreviewPlaceholder">Original document will appear here.</div>
+              </div>
+              <nav id="origPdfNav" class="pdf-nav" hidden aria-label="Original PDF page navigation">
+                <button id="origPdfPrev" type="button" aria-label="Previous page">◀ Prev</button>
+                <span id="origPdfIndicator" class="pdf-page-indicator" aria-live="polite">Page 1 / 1</span>
+                <button id="origPdfNext" type="button" aria-label="Next page">Next ▶</button>
+              </nav>
+            </div>
+            <div class="file-pane">
+              <div class="file-pane-label">Redacted</div>
+              <div class="file-preview-viewport" id="redactedPreviewViewport">
+                <canvas id="redactedPdfCanvas" hidden></canvas>
+                <div class="docx-pane" id="redactedDocxContainer" hidden></div>
+                <div class="file-preview-placeholder" id="redactedPreviewPlaceholder">Redacted document will appear here.</div>
+              </div>
+              <nav id="redactedPdfNav" class="pdf-nav" hidden aria-label="Redacted PDF page navigation">
+                <button id="redactedPdfPrev" type="button" aria-label="Previous page">◀ Prev</button>
+                <span id="redactedPdfIndicator" class="pdf-page-indicator" aria-live="polite">Page 1 / 1</span>
+                <button id="redactedPdfNext" type="button" aria-label="Next page">Next ▶</button>
+              </nav>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="panel">
-        <div class="section-label">Detections</div>
-        <pre id="detectionList">[]</pre>
-      </section>
+        <!-- Text mode: before/after mapping (hidden in file mode) -->
+        <section id="replacementMapping" class="panel review-primary">
+          <div class="before-after-label">
+            <span>Input Highlight → Redacted</span>
+            <span class="mapping-flow-label">左侧显示输入中的命中片段；右侧保留可直接复制的脱敏结果。</span>
+          </div>
+          <div id="mappingLegend" class="mapping-legend">
+            <span class="legend-pill entity-private_person"><span class="legend-swatch"></span>Person</span>
+            <span class="legend-pill entity-private_address"><span class="legend-swatch"></span>Address</span>
+            <span class="legend-pill entity-private_email"><span class="legend-swatch"></span>Email</span>
+            <span class="legend-pill entity-private_phone"><span class="legend-swatch"></span>Phone</span>
+            <span class="legend-pill entity-private_url"><span class="legend-swatch"></span>URL</span>
+            <span class="legend-pill entity-private_date"><span class="legend-swatch"></span>Date</span>
+            <span class="legend-pill entity-account_number"><span class="legend-swatch"></span>Account</span>
+            <span class="legend-pill entity-secret"><span class="legend-swatch"></span>Secret</span>
+          </div>
+          <div class="helper-copy">高亮下划线表示命中类型；继续外发前，先确认右侧保留的是可安全复制的占位版本。</div>
+          <div class="mapping-compare-grid">
+            <section class="mapping-card">
+              <div class="mapping-label">Input Highlight</div>
+              <div id="inputInspector" class="mapping-surface empty-state" aria-label="Input highlight">Run a scan to highlight the exact spans inside the source text.</div>
+            </section>
+            <section class="mapping-card">
+              <div class="mapping-label">Redacted</div>
+              <div id="outputMappingList" class="mapping-surface empty-state" aria-label="Redacted output">Safe placeholders will appear here after a scan.</div>
+            </section>
+          </div>
+        </section>
 
-      <section class="panel">
-        <div class="section-label">Redacted Output</div>
-        <pre id="redactedText"></pre>
-        <div id="statusMessage" role="status" aria-live="polite"></div>
+        <section class="panel inspector-shell">
+          <div class="section-label">Inspector</div>
+          <div id="inspectorTabs" class="inspector-tabs" role="tablist" aria-label="Inspector Sections">
+            <button type="button" class="inspector-tab is-active" data-inspector-target="riskPanel" role="tab" aria-selected="true">Risk</button>
+            <button type="button" class="inspector-tab" data-inspector-target="nextStepPanel" role="tab" aria-selected="false">Recommended Next Step</button>
+            <button type="button" class="inspector-tab" data-inspector-target="detectionPanel" role="tab" aria-selected="false">Detections</button>
+            <button type="button" class="inspector-tab" data-inspector-target="runtimePanel" role="tab" aria-selected="false">Runtime</button>
+          </div>
+
+          <div class="inspector-panels">
+            <aside id="riskPanel" class="inspector-panel panel-risk" role="tabpanel">
+              <div class="section-label">Risk</div>
+              <div class="risk-summary">
+                <span id="riskLevel">risk: unknown</span>
+                <span id="spanCount">spans: 0</span>
+              </div>
+              <p id="riskReason">No sensitive content detected yet.</p>
+            </aside>
+
+            <section id="nextStepPanel" class="inspector-panel" hidden role="tabpanel">
+              <div class="section-label">Recommended Next Step</div>
+              <div class="mapping-label">Primary Risk</div>
+              <div id="primaryRiskList" class="recommendation-list">
+                <p class="recommendation-item">Run a redaction check to inspect secrets before outbound use.</p>
+              </div>
+              <div class="mapping-label">Secondary Signals</div>
+              <div id="secondarySignalsList" class="recommendation-list">
+                <p class="recommendation-item">PII findings will appear here after a scan.</p>
+              </div>
+            </section>
+
+            <section id="detectionPanel" class="inspector-panel" hidden role="tabpanel">
+              <div class="section-label">Detections</div>
+              <pre id="detectionList">[]</pre>
+            </section>
+
+            <section id="runtimePanel" class="inspector-panel" hidden role="tabpanel">
+              <div class="section-label">Runtime</div>
+              <div class="mapping-label">Debug Timing And Cache</div>
+              <div id="debugPanel" class="debug-grid">
+                <section class="debug-card">
+                  <div class="mapping-label">Runtime Status</div>
+                  <div id="readyStatus" class="debug-meta">
+                    <span>status: unknown</span>
+                    <span>prewarm: unknown</span>
+                  </div>
+                  <pre id="runtimeStats">Waiting for runtime status.</pre>
+                </section>
+                <section class="debug-card">
+                  <div class="mapping-label">Last Request Timing</div>
+                  <div id="timingHeadline" class="debug-meta">
+                    <span>last request: none</span>
+                  </div>
+                  <pre id="timingStats">Run a redaction check to inspect timing breakdown.</pre>
+                </section>
+                <section class="debug-card">
+                  <div class="mapping-label">Cache</div>
+                  <pre id="cacheStats">Waiting for cache stats.</pre>
+                </section>
+                <section class="debug-card">
+                  <div class="mapping-label">Request Averages</div>
+                  <pre id="requestStats">Waiting for request stats.</pre>
+                </section>
+              </div>
+            </section>
+          </div>
+        </section>
       </section>
     </main>
-    <script>
+
+    <script type="module">
+      /* ── pdf.js setup ───────────────────────────────────────────────── */
+      let pdfjsLib = null;
+      try {
+        const mod = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs");
+        pdfjsLib = mod;
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs";
+      } catch (_e) {
+        // pdf.js unavailable (offline / CSP) — preview degrades gracefully
+      }
+
+      /* ── Constants ─────────────────────────────────────────────────── */
       const PLACEHOLDER_COPY = {
         secret: "<SECRET>",
         private_email: "<PRIVATE_EMAIL>",
@@ -428,7 +945,39 @@
         balanced: "Blend common secret coverage with tolerable noise for everyday developer use.",
         high_precision: "Prefer strong indicators only. This mode reduces noise but may miss edge-case secrets."
       };
-      const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:7861" : "";
+
+      const LABEL_ENTITY_CLASS = {
+        secret: "entity-secret",
+        private_email: "entity-private_email",
+        private_phone: "entity-private_phone",
+        account_number: "entity-account_number",
+        private_url: "entity-private_url",
+        private_address: "entity-private_address",
+        private_person: "entity-private_person",
+        private_date: "entity-private_date"
+      };
+
+      const LABEL_COLOR = {
+        secret:          "#d9588a",
+        private_email:   "#4b98f0",
+        private_phone:   "#82b83b",
+        account_number:  "#cf8a14",
+        private_url:     "#e1773b",
+        private_address: "#2fb49c",
+        private_person:  "#f25b5b",
+        private_date:    "#8a7cf4",
+      };
+
+      const LABEL_NAME = {
+        secret:          "Secret",
+        private_email:   "Email",
+        private_phone:   "Phone",
+        account_number:  "Account",
+        private_url:     "URL",
+        private_address: "Address",
+        private_person:  "Person",
+        private_date:    "Date",
+      };
 
       const SECRET_KIND_COPY = {
         api_key: "Detected API key material. Replace it before sending externally.",
@@ -441,253 +990,899 @@
         token: "Detected token-like secret material. Review before sharing."
       };
 
+      const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:7861" : "";
+
+      /* ── DOM refs ───────────────────────────────────────────────────── */
+      const homeView = document.getElementById("homeView");
+      const reviewView = document.getElementById("reviewView");
       const sourceText = document.getElementById("sourceText");
+      const fileInput = document.getElementById("fileInput");
+      const dropZone = document.getElementById("dropZone");
+      const fileClearButton = document.getElementById("fileClearButton");
+      const selectedFileName = document.getElementById("selectedFileName");
       const detectionMode = document.getElementById("detectionMode");
       const modeDescription = document.getElementById("modeDescription");
       const redactButton = document.getElementById("redactButton");
       const copyButton = document.getElementById("copyButton");
+      const downloadFileButton = document.getElementById("downloadFileButton");
+      const backButton = document.getElementById("backButton");
       const statusMessage = document.getElementById("statusMessage");
       const riskLevel = document.getElementById("riskLevel");
       const spanCount = document.getElementById("spanCount");
       const riskReason = document.getElementById("riskReason");
       const primaryRiskList = document.getElementById("primaryRiskList");
       const secondarySignalsList = document.getElementById("secondarySignalsList");
-      const sourceMappingList = document.getElementById("sourceMappingList");
+      const inputInspector = document.getElementById("inputInspector");
       const outputMappingList = document.getElementById("outputMappingList");
       const detectionList = document.getElementById("detectionList");
-      const redactedText = document.getElementById("redactedText");
+      const readyStatus = document.getElementById("readyStatus");
+      const runtimeStats = document.getElementById("runtimeStats");
+      const timingHeadline = document.getElementById("timingHeadline");
+      const timingStats = document.getElementById("timingStats");
+      const cacheStats = document.getElementById("cacheStats");
+      const requestStats = document.getElementById("requestStats");
+      const inspectorTabs = document.getElementById("inspectorTabs");
+      const inspectorTabButtons = [...document.querySelectorAll("[data-inspector-target]")];
+      const reviewSourceMeta = document.getElementById("reviewSourceMeta");
+      const reviewFileMeta = document.getElementById("reviewFileMeta");
+      // File compare panel
+      const fileComparePanel = document.getElementById("fileComparePanel");
+      const replacementMapping = document.getElementById("replacementMapping");
+      // Orig pane
+      const origPreviewViewport = document.getElementById("origPreviewViewport");
+      const origPdfCanvas = document.getElementById("origPdfCanvas");
+      const origDocxContainer = document.getElementById("origDocxContainer");
+      const origPreviewPlaceholder = document.getElementById("origPreviewPlaceholder");
+      const origPdfNav = document.getElementById("origPdfNav");
+      const origPdfPrev = document.getElementById("origPdfPrev");
+      const origPdfNext = document.getElementById("origPdfNext");
+      const origPdfIndicator = document.getElementById("origPdfIndicator");
+      // Redacted pane
+      const redactedPreviewViewport = document.getElementById("redactedPreviewViewport");
+      const redactedPdfCanvas = document.getElementById("redactedPdfCanvas");
+      const redactedDocxContainer = document.getElementById("redactedDocxContainer");
+      const redactedPreviewPlaceholder = document.getElementById("redactedPreviewPlaceholder");
+      const redactedPdfNav = document.getElementById("redactedPdfNav");
+      const redactedPdfPrev = document.getElementById("redactedPdfPrev");
+      const redactedPdfNext = document.getElementById("redactedPdfNext");
+      const redactedPdfIndicator = document.getElementById("redactedPdfIndicator");
 
+      /* ── App state ──────────────────────────────────────────────────── */
+      const S = {
+        copyText: "",
+        reviewSource: { kind: "text" },
+        redactedBlob: null,
+        redactedFilename: "",
+        // file flow: cached after analyze phase, used for on-demand download
+        fileBytes: null,
+        fileMimeType: "",
+        fileName: "",
+        fileSuffix: "",
+        fileType: "",
+        text: "",
+        spans: [],
+        activeCats: new Set(),
+        activeSpans: new Set(), // indices into S.spans that will be redacted
+        // per-pane pdf.js state
+        origPdfDoc: null,
+        origPdfCurrentPage: 1,
+        origPdfRenderTask: null,
+        redactedPdfDoc: null,
+        redactedPdfCurrentPage: 1,
+        redactedPdfRenderTask: null,
+      };
+
+      /* ── Utilities ──────────────────────────────────────────────────── */
       function setStatus(message, isError = false) {
         statusMessage.textContent = message;
         statusMessage.dataset.state = isError ? "error" : "ok";
       }
 
       function getErrorMessage(error) {
-        if (error instanceof Error && error.message) {
-          return error.message;
-        }
+        if (error instanceof Error && error.message) return error.message;
         return String(error);
       }
 
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function getOrderedSpans(spans) {
+        return [...spans].sort((a, b) => a.start !== b.start ? a.start - b.start : a.end - b.end);
+      }
+
+      function getEntityClass(label) {
+        return LABEL_ENTITY_CLASS[label] || "entity-secret";
+      }
+
+      /* ── View transitions ───────────────────────────────────────────── */
+      function showHomeView() {
+        homeView.classList.add("is-active");
+        reviewView.classList.remove("is-active");
+      }
+
+      function showReviewView() {
+        reviewView.classList.add("is-active");
+        homeView.classList.remove("is-active");
+        reviewView.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+
+      /* ── Inspector tabs ─────────────────────────────────────────────── */
+      function setActiveInspectorTab(targetId) {
+        for (const btn of inspectorTabButtons) {
+          const active = btn.dataset.inspectorTarget === targetId;
+          btn.classList.toggle("is-active", active);
+          btn.setAttribute("aria-selected", active ? "true" : "false");
+        }
+        for (const panel of reviewView.querySelectorAll(".inspector-panel")) {
+          panel.hidden = panel.id !== targetId;
+        }
+      }
+
+      /* ── Timing / debug ─────────────────────────────────────────────── */
+      function formatSecondsAsMs(seconds) {
+        if (typeof seconds !== "number") return "n/a";
+        return `${(seconds * 1000).toFixed(1)} ms`;
+      }
+
+      function renderJsonBlock(target, value) {
+        target.textContent = JSON.stringify(value, null, 2);
+      }
+
+      function renderRequestTiming(timings) {
+        if (!timings) {
+          timingHeadline.innerHTML = "<span>last request: none</span>";
+          timingStats.textContent = "Run a redaction check to inspect timing breakdown.";
+          return;
+        }
+        timingHeadline.innerHTML = `
+          <span>total: ${formatSecondsAsMs(timings.total_seconds)}</span>
+          <span>spans: ${timings.span_count}</span>
+          <span>mode: ${timings.detection_mode}</span>
+          <span>hits: ${timings.hit_type_bucket || "unknown"}</span>
+        `;
+        renderJsonBlock(timingStats, {
+          total_ms: formatSecondsAsMs(timings.total_seconds),
+          opf_ms: formatSecondsAsMs(timings.opf_seconds),
+          parser_ms: formatSecondsAsMs(timings.parser_seconds),
+          regex_ms: formatSecondsAsMs(timings.regex_seconds),
+          merge_ms: formatSecondsAsMs(timings.merge_seconds)
+        });
+      }
+
+      function renderRuntimeStatus(runtime) {
+        readyStatus.innerHTML = `
+          <span>status: ${runtime.status}</span>
+          <span>prewarm: ${runtime.prewarm_succeeded ? "ready" : runtime.prewarm_attempted ? "failed" : runtime.prewarm_enabled ? "pending" : "disabled"}</span>
+        `;
+        renderJsonBlock(runtimeStats, runtime);
+      }
+
+      async function refreshDebugStats(latestTiming = null) {
+        try {
+          const [readyRes, statsRes] = await Promise.all([
+            fetch(`${API_BASE}/ready`),
+            fetch(`${API_BASE}/stats`)
+          ]);
+          if (!(readyRes.ok || readyRes.status === 503) || !statsRes.ok) throw new Error("debug stats unavailable");
+          const runtime = await readyRes.json();
+          const stats = await statsRes.json();
+          renderRuntimeStatus(runtime);
+          renderRequestTiming(latestTiming || stats.requests.last_timing);
+          renderJsonBlock(cacheStats, stats.cache);
+          renderJsonBlock(requestStats, {
+            total_requests: stats.requests.total_requests,
+            recent_window: stats.requests.recent_window,
+            recent_count: stats.requests.recent_count,
+            average_timing_ms: {
+              total: formatSecondsAsMs(stats.requests.average_timing.total_seconds),
+              opf: formatSecondsAsMs(stats.requests.average_timing.opf_seconds),
+              parser: formatSecondsAsMs(stats.requests.average_timing.parser_seconds),
+              regex: formatSecondsAsMs(stats.requests.average_timing.regex_seconds),
+              merge: formatSecondsAsMs(stats.requests.average_timing.merge_seconds)
+            },
+            buckets: stats.requests.buckets,
+            hit_type_buckets: stats.requests.hit_type_buckets
+          });
+        } catch (error) {
+          readyStatus.innerHTML = "<span>status: unavailable</span>";
+          runtimeStats.textContent = `Debug status unavailable: ${getErrorMessage(error)}`;
+        }
+      }
+
+      /* ── Risk / recommendation rendering ───────────────────────────── */
       function buildRecommendationMessage(spans, reason, riskLevelValue) {
-        if (!spans.length) {
-          return ["No sensitive content detected. Local review can continue."];
-        }
-
-        const labels = [...new Set(spans.map((span) => span.label))];
-        const messages = labels.map((label) => EXPLANATION_COPY[label] || EXPLANATION_COPY.default);
-
-        if (reason && !messages.includes(reason)) {
-          messages.push(`Why this is risky: ${reason}.`);
-        } else if (riskLevelValue === "high" && !messages.includes(EXPLANATION_COPY.default)) {
-          messages.push(EXPLANATION_COPY.default);
-        }
-
+        if (!spans.length) return ["No sensitive content detected. Local review can continue."];
+        const labels = [...new Set(spans.map(s => s.label))];
+        const messages = labels.map(l => EXPLANATION_COPY[l] || EXPLANATION_COPY.default);
+        if (reason && !messages.includes(reason)) messages.push(`Why this is risky: ${reason}.`);
+        else if (riskLevelValue === "high" && !messages.includes(EXPLANATION_COPY.default)) messages.push(EXPLANATION_COPY.default);
         return messages;
       }
 
-      function getPrimarySecretSpans(spans) {
-        return spans.filter((span) => span.label === "secret");
-      }
-
-      function getSecondaryPiiSpans(spans) {
-        return spans.filter((span) => span.label !== "secret");
-      }
-
-      function renderModeDescription() {
-        modeDescription.textContent = MODE_COPY[detectionMode.value];
+      function summarizeSecretKinds(secretSpans, reason) {
+        const counts = new Map();
+        for (const s of secretSpans) { const k = s.kind || "secret"; counts.set(k, (counts.get(k) || 0) + 1); }
+        const parts = [...counts.entries()].map(([k, c]) => { const l = k.replaceAll("_", " "); return c > 1 ? `${l} ×${c}` : l; });
+        const summary = `Detected ${secretSpans.length} secret span${secretSpans.length > 1 ? "s" : ""} across ${counts.size} type${counts.size > 1 ? "s" : ""}: ${parts.join(", ")}.`;
+        return reason ? `${summary} Why this is risky: ${reason}.` : `${summary} Replace them before sharing externally.`;
       }
 
       function renderPrimaryRisk(spans, reason) {
-        const secretSpans = getPrimarySecretSpans(spans);
+        const secretSpans = spans.filter(s => s.label === "secret");
         primaryRiskList.innerHTML = "";
-
         if (!secretSpans.length) {
-          primaryRiskList.innerHTML =
-            '<p class="recommendation-item">No developer secrets detected. Review the secondary signals before sharing.</p>';
+          primaryRiskList.innerHTML = '<p class="recommendation-item">No developer secrets detected. Review the secondary signals before sharing.</p>';
           return;
         }
-
-        for (const span of secretSpans) {
-          const item = document.createElement("p");
-          item.className = "recommendation-item";
-          item.textContent = SECRET_KIND_COPY[span.kind] || "Detected secret. Review before sharing.";
-          primaryRiskList.appendChild(item);
-        }
-
-        if (reason && !secretSpans.some((span) => span.kind in SECRET_KIND_COPY)) {
-          const item = document.createElement("p");
-          item.className = "recommendation-item";
-          item.textContent = `Why this is risky: ${reason}.`;
-          primaryRiskList.appendChild(item);
-        }
+        const item = document.createElement("p");
+        item.className = "recommendation-item";
+        item.textContent = summarizeSecretKinds(secretSpans, reason);
+        primaryRiskList.appendChild(item);
       }
 
       function renderSecondarySignals(spans) {
-        const piiSpans = getSecondaryPiiSpans(spans);
+        const piiSpans = spans.filter(s => s.label !== "secret");
         secondarySignalsList.innerHTML = "";
-
         if (!piiSpans.length) {
-          secondarySignalsList.innerHTML =
-            '<p class="recommendation-item">No secondary PII signals detected.</p>';
+          secondarySignalsList.innerHTML = '<p class="recommendation-item">No secondary PII signals detected.</p>';
           return;
         }
-
-        const messages = buildRecommendationMessage(piiSpans, "", "medium");
-        for (const message of messages) {
+        for (const msg of buildRecommendationMessage(piiSpans, "", "medium")) {
           const item = document.createElement("p");
           item.className = "recommendation-item";
-          item.textContent = message;
+          item.textContent = msg;
           secondarySignalsList.appendChild(item);
         }
       }
 
-      function createMappingRow(contentClass, text) {
-        const row = document.createElement("div");
-        row.className = "mapping-row";
-
-        const mark = document.createElement("span");
-        mark.className = `mark ${contentClass}`;
-        mark.textContent = text;
-        row.appendChild(mark);
-
-        return row;
+      /* ── Text mapping rendering ─────────────────────────────────────── */
+      // orderedSpans preserves original index so toggleSpan can reference S.spans[idx]
+      function getOrderedSpansWithIdx(spans) {
+        return spans.map((sp, i) => ({ ...sp, _idx: i })).sort((a, b) => a.start !== b.start ? a.start - b.start : a.end - b.end);
       }
 
-      function renderReplacementMapping(spans) {
-        sourceMappingList.innerHTML = "";
-        outputMappingList.innerHTML = "";
+      function renderDetectedHtml(text, spans) {
+        let html = "", cursor = 0;
+        for (const span of getOrderedSpansWithIdx(spans)) {
+          html += escapeHtml(text.slice(cursor, span.start));
+          const isOff = !S.activeSpans.has(span._idx);
+          html += `<span class="entity ${getEntityClass(span.label)}${isOff ? " off" : ""}" data-cat="${span.label}" data-span-idx="${span._idx}" title="点击切换此 span 脱敏">${escapeHtml(text.slice(span.start, span.end))}</span>`;
+          cursor = span.end;
+        }
+        return html + escapeHtml(text.slice(cursor));
+      }
 
+      function renderRedactedHtml(text, spans) {
+        let html = "", cursor = 0;
+        for (const span of getOrderedSpansWithIdx(spans)) {
+          html += escapeHtml(text.slice(cursor, span.start));
+          if (S.activeSpans.has(span._idx)) {
+            html += `<span class="entity entity-output ${getEntityClass(span.label)}">${escapeHtml(PLACEHOLDER_COPY[span.label] || "<REDACTED>")}</span>`;
+          } else {
+            html += `<span class="entity ${getEntityClass(span.label)} preserved" title="保留原文">${escapeHtml(text.slice(span.start, span.end))}</span>`;
+          }
+          cursor = span.end;
+        }
+        return html + escapeHtml(text.slice(cursor));
+      }
+
+      function renderMappingPanes() {
+        if (!S.spans.length) return;
+        inputInspector.innerHTML = renderDetectedHtml(S.text, S.spans);
+        outputMappingList.innerHTML = renderRedactedHtml(S.text, S.spans);
+      }
+
+      function renderReplacementMapping(text, spans, redactedTextValue = "") {
+        inputInspector.classList.toggle("empty-state", !spans.length);
+        outputMappingList.classList.toggle("empty-state", !spans.length);
         if (!spans.length) {
-          sourceMappingList.innerHTML = '<div class="mapping-row empty-state">No sensitive source spans found.</div>';
-          outputMappingList.innerHTML = '<div class="mapping-row empty-state">No placeholder replacements needed.</div>';
+          inputInspector.textContent = text ? "No sensitive spans highlighted in the input preview." : "Run a scan to highlight the exact spans inside the source text.";
+          outputMappingList.innerHTML = redactedTextValue ? escapeHtml(redactedTextValue) : "Safe placeholders will appear here after a scan.";
           return;
         }
+        renderMappingPanes();
+      }
 
-        for (const span of spans) {
-          sourceMappingList.appendChild(createMappingRow("mark-hot", span.text));
-          outputMappingList.appendChild(
-            createMappingRow("mark-safe", PLACEHOLDER_COPY[span.label] || "<REDACTED>")
-          );
+      // Toggle a single span by its index in S.spans
+      function toggleSpan(idx) {
+        if (S.activeSpans.has(idx)) {
+          S.activeSpans.delete(idx);
+        } else {
+          S.activeSpans.add(idx);
+        }
+        // Sync category button state: off if all spans of that label are inactive
+        const label = S.spans[idx]?.label;
+        if (label) {
+          const allOff = S.spans.every((sp, i) => sp.label !== label || !S.activeSpans.has(i));
+          S.activeCats[allOff ? "delete" : "add"](label);
+          const btn = document.querySelector(`.cat-toggle[data-cat="${label}"]`);
+          if (btn) { btn.classList.toggle("is-off", allOff); btn.setAttribute("aria-pressed", allOff ? "false" : "true"); }
+        }
+        renderMappingPanes();
+        updateDownloadBtnHint();
+        scheduleFileRefresh();
+      }
+
+      /* ── Statistics panel ──────────────────────────────────────────── */
+      function renderStats(text, spans) {
+        const statsPanel = document.getElementById("statsPanel");
+        if (!spans.length) { statsPanel.hidden = true; return; }
+
+        const piiChars = spans.reduce((sum, s) => sum + (s.end - s.start), 0);
+        const piiPct = text.length > 0 ? Math.round(piiChars / text.length * 100) : 0;
+
+        const catCounts = new Map();
+        for (const s of spans) catCounts.set(s.label, (catCounts.get(s.label) || 0) + 1);
+        const total = spans.length;
+
+        document.getElementById("statsPiiPct").textContent = `${piiPct}%`;
+        document.getElementById("statsSpanCount").textContent = String(total);
+        document.getElementById("statsCatCount").textContent = String(catCounts.size);
+
+        const bar = document.getElementById("statsBar");
+        bar.innerHTML = "";
+        for (const [label, count] of catCounts) {
+          const seg = document.createElement("div");
+          seg.className = "stats-bar-seg";
+          seg.style.width = `${(count / total * 100).toFixed(1)}%`;
+          seg.style.background = LABEL_COLOR[label] || "#888";
+          seg.title = `${LABEL_NAME[label] || label}: ${count}`;
+          bar.appendChild(seg);
+        }
+
+        const catsEl = document.getElementById("statsCats");
+        catsEl.innerHTML = "";
+        for (const [label, count] of catCounts) {
+          const chip = document.createElement("span");
+          chip.className = "stats-cat-chip";
+          chip.style.color = LABEL_COLOR[label] || "#888";
+          chip.style.borderColor = LABEL_COLOR[label] || "#888";
+          chip.innerHTML = `<span class="swatch" style="background:${LABEL_COLOR[label] || '#888'}"></span>${LABEL_NAME[label] || label} <strong>${count}</strong>`;
+          catsEl.appendChild(chip);
+        }
+
+        statsPanel.hidden = false;
+      }
+
+      /* ── Category toggles ───────────────────────────────────────────── */
+      function renderCatSidebar(spans) {
+        const catSidebar = document.getElementById("catSidebar");
+        const catList = document.getElementById("catList");
+        catList.innerHTML = "";
+        if (!spans.length) { catSidebar.hidden = true; return; }
+
+        const catCounts = new Map();
+        for (const s of spans) catCounts.set(s.label, (catCounts.get(s.label) || 0) + 1);
+
+        S.activeCats = new Set(catCounts.keys());
+        S.activeSpans = new Set(spans.map((_, i) => i));
+
+        for (const [label, count] of catCounts) {
+          const btn = document.createElement("button");
+          btn.className = "cat-toggle";
+          btn.type = "button";
+          btn.dataset.cat = label;
+          btn.style.color = LABEL_COLOR[label] || "#888";
+          btn.innerHTML = `<span class="swatch" style="background:${LABEL_COLOR[label] || '#888'}"></span>${LABEL_NAME[label] || label} <strong>${count}</strong>`;
+          btn.setAttribute("role", "listitem");
+          btn.setAttribute("aria-pressed", "true");
+          btn.addEventListener("click", () => toggleCat(label));
+          catList.appendChild(btn);
+        }
+
+        catSidebar.hidden = false;
+      }
+
+      function updateDownloadBtnHint() {
+        if (!S.fileBytes) return;
+        const total = S.spans.length;
+        const active = S.activeSpans.size;
+        const skipped = total - active;
+        const hint = skipped > 0
+          ? `下载 (${active}/${total} 项脱敏，${skipped} 项保留原文)`
+          : `下载脱敏文件`;
+        downloadFileButton.title = hint;
+      }
+
+      function scheduleFileRefresh() {
+        // In file mode, debounce preview regeneration after toggle
+        if (!S.fileBytes) return;
+        if (scheduleFileRefresh._timer) clearTimeout(scheduleFileRefresh._timer);
+        scheduleFileRefresh._timer = setTimeout(async () => {
+          scheduleFileRefresh._timer = null;
+          try {
+            await downloadAndPreviewFile();
+          } catch (e) {
+            setStatus(`Preview refresh failed: ${getErrorMessage(e)}`, true);
+          }
+        }, 600);
+      }
+
+      function toggleCat(label) {
+        const nowOn = !S.activeCats.has(label);
+        if (nowOn) S.activeCats.add(label); else S.activeCats.delete(label);
+
+        // Sync activeSpans for all spans of this label
+        S.spans.forEach((sp, i) => { if (sp.label === label) { if (nowOn) S.activeSpans.add(i); else S.activeSpans.delete(i); } });
+
+        renderMappingPanes();
+        const btn = document.querySelector(`.cat-toggle[data-cat="${label}"]`);
+        if (btn) { btn.classList.toggle("is-off", !nowOn); btn.setAttribute("aria-pressed", nowOn ? "true" : "false"); }
+
+        updateDownloadBtnHint();
+        scheduleFileRefresh();
+      }
+
+      function setAllCats(on) {
+        const catList = document.getElementById("catList");
+        for (const btn of catList.querySelectorAll(".cat-toggle")) {
+          const label = btn.dataset.cat;
+          if (on) S.activeCats.add(label); else S.activeCats.delete(label);
+          btn.classList.toggle("is-off", !on);
+          btn.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        S.spans.forEach((_, i) => { if (on) S.activeSpans.add(i); else S.activeSpans.delete(i); });
+        renderMappingPanes();
+        updateDownloadBtnHint();
+        scheduleFileRefresh();
+      }
+
+      /* ── File compare pane rendering ───────────────────────────────── */
+
+      // Generic: render one page into a specific canvas, update nav elements
+      async function renderPdfPageInto(pane, pageNum) {
+        // pane = { pdfDocKey, pageKey, renderTaskKey, canvasEl, viewportEl, navEl, indicatorEl, prevBtn, nextBtn }
+        if (!S[pane.pdfDocKey]) return;
+        if (S[pane.renderTaskKey]) { S[pane.renderTaskKey].cancel(); S[pane.renderTaskKey] = null; }
+
+        const pdfDoc = S[pane.pdfDocKey];
+        const page = await pdfDoc.getPage(pageNum);
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const viewportWidth = (pane.viewportEl.clientWidth || 600) - 4;
+        const baseViewport = page.getViewport({ scale: 1 });
+        const scale = (viewportWidth / baseViewport.width) * devicePixelRatio;
+        const viewport = page.getViewport({ scale });
+
+        pane.canvasEl.width = viewport.width;
+        pane.canvasEl.height = viewport.height;
+        pane.canvasEl.style.width = `${viewport.width / devicePixelRatio}px`;
+        pane.canvasEl.style.height = `${viewport.height / devicePixelRatio}px`;
+
+        S[pane.renderTaskKey] = page.render({ canvasContext: pane.canvasEl.getContext("2d"), viewport });
+        try {
+          await S[pane.renderTaskKey].promise;
+        } catch (e) {
+          if (e?.name !== "RenderingCancelledException") throw e;
+        }
+        S[pane.renderTaskKey] = null;
+        S[pane.pageKey] = pageNum;
+        pane.indicatorEl.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
+        pane.prevBtn.disabled = pageNum <= 1;
+        pane.nextBtn.disabled = pageNum >= pdfDoc.numPages;
+      }
+
+      // Generic: load arrayBuffer into one pane (PDF or DOCX)
+      async function loadPanePreview(arrayBuffer, fileType, pane) {
+        // Reset pane state
+        S[pane.pdfDocKey] = null;
+        pane.canvasEl.hidden = true;
+        pane.docxContainerEl.innerHTML = "";
+        pane.docxContainerEl.hidden = true;
+        pane.navEl.hidden = true;
+        pane.placeholderEl.hidden = false;
+        pane.placeholderEl.textContent = "Rendering…";
+
+        // Remove any stale loader
+        pane.viewportEl.querySelector(".doc-preview-loading")?.remove();
+        const loader = document.createElement("div");
+        loader.className = "doc-preview-loading";
+        loader.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>Rendering ${fileType.toUpperCase()}…</span>`;
+        pane.viewportEl.appendChild(loader);
+
+        try {
+          if (fileType === "pdf") {
+            if (!pdfjsLib) throw new Error("pdf.js not available");
+            S[pane.pdfDocKey] = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            loader.remove();
+            pane.placeholderEl.hidden = true;
+            pane.navEl.hidden = S[pane.pdfDocKey].numPages <= 1;
+            pane.canvasEl.hidden = false;
+            void pane.canvasEl.offsetWidth;
+            await renderPdfPageInto(pane, 1);
+          } else if (fileType === "docx") {
+            const docxpreview = window.docx;
+            if (!docxpreview?.renderAsync) throw new Error("docx-preview not loaded");
+            pane.docxContainerEl.innerHTML = "";
+            pane.navEl.hidden = true;
+            await docxpreview.renderAsync(arrayBuffer, pane.docxContainerEl, null, {
+              breakPages: true, renderHeaders: true, renderFooters: true,
+              useBase64URL: true, ignoreWidth: false, ignoreHeight: false
+            });
+            loader.remove();
+            pane.placeholderEl.hidden = true;
+            pane.docxContainerEl.hidden = false;
+          } else {
+            throw new Error(`Preview not available for .${fileType} files`);
+          }
+        } catch (e) {
+          loader.remove();
+          pane.placeholderEl.hidden = false;
+          pane.placeholderEl.textContent = `Render failed: ${getErrorMessage(e)}`;
         }
       }
 
-      function formatDetection(span) {
-        const details = {
-          label: span.label,
-          kind: span.kind || null,
-          source: span.source || null,
-          score: span.score ?? null,
-          reason_codes: span.reason_codes || [],
-          text: span.text
-        };
-        return JSON.stringify(details, null, 2);
+      // Pane descriptor objects — passed to loadPanePreview / renderPdfPageInto
+      const ORIG_PANE = {
+        pdfDocKey: "origPdfDoc", pageKey: "origPdfCurrentPage", renderTaskKey: "origPdfRenderTask",
+        canvasEl: origPdfCanvas, viewportEl: origPreviewViewport,
+        docxContainerEl: origDocxContainer, placeholderEl: origPreviewPlaceholder,
+        navEl: origPdfNav, indicatorEl: origPdfIndicator, prevBtn: origPdfPrev, nextBtn: origPdfNext,
+      };
+      const REDACTED_PANE = {
+        pdfDocKey: "redactedPdfDoc", pageKey: "redactedPdfCurrentPage", renderTaskKey: "redactedPdfRenderTask",
+        canvasEl: redactedPdfCanvas, viewportEl: redactedPreviewViewport,
+        docxContainerEl: redactedDocxContainer, placeholderEl: redactedPreviewPlaceholder,
+        navEl: redactedPdfNav, indicatorEl: redactedPdfIndicator, prevBtn: redactedPdfPrev, nextBtn: redactedPdfNext,
+      };
+
+      /* ── File state ─────────────────────────────────────────────────── */
+      function setSelectedFileState(file = null) {
+        if (file) {
+          selectedFileName.textContent = `${file.name} selected`;
+          fileClearButton.hidden = false;
+          return;
+        }
+        selectedFileName.textContent = "";
+        fileClearButton.hidden = true;
       }
 
-      function selectRedactedText() {
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(redactedText);
-        selection.removeAllRanges();
-        selection.addRange(range);
+      function updateReviewSourceMeta(details = {}) {
+        if (details.kind === "file") {
+          reviewSourceMeta.textContent = "file ingest";
+          reviewFileMeta.hidden = false;
+          reviewFileMeta.textContent = `${details.filename} / ${details.fileType} / ${details.charCount} chars`;
+          downloadFileButton.hidden = false;
+          return;
+        }
+        reviewSourceMeta.textContent = "text buffer";
+        reviewFileMeta.hidden = true;
+        reviewFileMeta.textContent = "pdf / docx review";
+        downloadFileButton.hidden = true;
       }
 
+      /* ── Error reading ──────────────────────────────────────────────── */
+      async function readErrorMessage(response) {
+        try {
+          const body = await response.json();
+          if (body && typeof body.error === "string") return body.error;
+          return JSON.stringify(body);
+        } catch (_e) {
+          const text = await response.text();
+          return text || `Request failed with status ${response.status}`;
+        }
+      }
+
+      /* ── Review state apply ─────────────────────────────────────────── */
+      function applyReviewResponse(data, reviewText, sourceDetails = { kind: "text" }) {
+        S.copyText = data.redacted_text || "";
+        S.text = reviewText;
+        S.spans = data.spans || [];
+        S.activeSpans = new Set(S.spans.map((_, i) => i));
+        S.activeCats = new Set(S.spans.map(sp => sp.label));
+        S.reviewSource = sourceDetails;
+        riskLevel.textContent = `risk: ${data.risk_level}`;
+        spanCount.textContent = `spans: ${data.spans.length}`;
+        riskReason.textContent = data.reason;
+        detectionList.textContent = data.spans.map(s => JSON.stringify({
+          label: s.label, kind: s.kind || null, source: s.source || null,
+          score: s.score ?? null, reason_codes: s.reason_codes || [], text: s.text
+        }, null, 2)).join("\n\n");
+        renderPrimaryRisk(data.spans, data.reason);
+        renderSecondarySignals(data.spans);
+        renderReplacementMapping(reviewText, data.spans, data.redacted_text);
+        renderStats(reviewText, data.spans);
+        renderCatSidebar(data.spans);
+        renderRequestTiming(data.timings);
+        refreshDebugStats(data.timings);
+        updateReviewSourceMeta(sourceDetails);
+        // Mode-aware panel visibility
+        const isFile = sourceDetails.kind === "file";
+        replacementMapping.hidden = isFile;
+        fileComparePanel.hidden = true; // downloadAndPreviewFile() will show it once blobs are ready
+        updateDownloadBtnHint();
+      }
+
+      /* ── Text review ────────────────────────────────────────────────── */
+      async function submitTextReview(text) {
+        const response = await fetch(`${API_BASE}/redact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, source: "manual_ui", target: "ai_model", mode: "warn", detection_mode: detectionMode.value })
+        });
+        if (!response.ok) throw new Error(await readErrorMessage(response));
+        const data = await response.json();
+        applyReviewResponse(data, text, { kind: "text" });
+        S.redactedBlob = null;
+      }
+
+      /* ── File review — analyze phase only (one request) ───────────── */
+      async function submitFileReview() {
+        const file = fileInput.files[0];
+        if (!file) throw new Error("No file selected");
+
+        // Cache file bytes in S for on-demand download later
+        S.fileBytes = await file.arrayBuffer();
+        S.fileMimeType = file.type || "application/octet-stream";
+        S.fileName = file.name;
+        S.fileSuffix = file.name.split(".").pop().toLowerCase();
+        S.redactedBlob = null;
+        S.redactedFilename = "";
+
+        const fd = new FormData();
+        fd.append("file", new Blob([S.fileBytes.slice(0)], { type: S.fileMimeType }), S.fileName);
+        fd.append("source", "manual_ui");
+        fd.append("target", "ai_model");
+        fd.append("mode", "warn");
+        fd.append("detection_mode", detectionMode.value);
+
+        const metaResponse = await fetch(`${API_BASE}/redact-file`, { method: "POST", body: fd });
+        if (!metaResponse.ok) throw new Error(await readErrorMessage(metaResponse));
+        const data = await metaResponse.json();
+
+        S.fileType = data.file_type;
+        S.text = data.source_text || "";
+        S.spans = data.spans || [];
+
+        applyReviewResponse(data, S.text, {
+          kind: "file",
+          filename: data.filename,
+          fileType: data.file_type,
+          charCount: data.char_count
+        });
+
+        // Trigger download + preview immediately (first scan)
+        await downloadAndPreviewFile();
+      }
+
+      /* ── Download redacted file (active_categories controls which spans are redacted) ── */
+      async function downloadAndPreviewFile() {
+        const fd = new FormData();
+        fd.append("file", new Blob([S.fileBytes.slice(0)], { type: S.fileMimeType }), S.fileName);
+        fd.append("source", "manual_ui");
+        fd.append("target", "ai_model");
+        fd.append("mode", "warn");
+        fd.append("detection_mode", detectionMode.value);
+        fd.append("active_categories", JSON.stringify([...S.activeCats]));
+
+        const downloadResponse = await fetch(`${API_BASE}/redact-file/download`, { method: "POST", body: fd });
+        if (!downloadResponse.ok) throw new Error(await readErrorMessage(downloadResponse));
+        const redactedBlob = await downloadResponse.blob();
+
+        const disposition = downloadResponse.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="([^"]+)"/i);
+        S.redactedBlob = redactedBlob;
+        S.redactedFilename = match ? match[1] : `${S.fileName.replace(/\.[^.]+$/, "")}_redacted.${S.fileSuffix}`;
+
+        // Show compare panel and render both panes in parallel
+        fileComparePanel.hidden = false;
+        await Promise.all([
+          loadPanePreview(S.fileBytes.slice(0), S.fileType, ORIG_PANE),
+          (async () => { await loadPanePreview(await S.redactedBlob.arrayBuffer(), S.fileType, REDACTED_PANE); })(),
+        ]);
+      }
+
+      /* ── Download (reuses cached blob) ─────────────────────────────── */
+      function triggerBlobDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      /* ── Selective redaction (respects activeCats) ─────────────────── */
+      function buildSelectiveRedactedText() {
+        if (!S.text || !S.spans.length) return S.copyText;
+        const sorted = getOrderedSpansWithIdx(S.spans);
+        let out = "", pos = 0;
+        for (const sp of sorted) {
+          if (sp.start > pos) out += S.text.slice(pos, sp.start);
+          out += S.activeSpans.has(sp._idx)
+            ? `[${sp.label.toUpperCase()}]`
+            : S.text.slice(sp.start, sp.end);
+          pos = sp.end;
+        }
+        out += S.text.slice(pos);
+        return out;
+      }
+
+      /* ── Copy ───────────────────────────────────────────────────────── */
       function copyWithFallback(text) {
         const helper = document.createElement("textarea");
         helper.value = text;
         helper.setAttribute("readonly", "");
-        helper.style.position = "fixed";
-        helper.style.left = "-9999px";
+        helper.style.cssText = "position:fixed;left:-9999px";
         document.body.appendChild(helper);
         helper.focus();
         helper.select();
-        helper.setSelectionRange(0, helper.value.length);
         const copied = document.execCommand("copy");
         document.body.removeChild(helper);
         return copied;
       }
 
-      function resetResultPanels() {
-        primaryRiskList.innerHTML = "";
-        secondarySignalsList.innerHTML = "";
-        sourceMappingList.innerHTML = "";
-        outputMappingList.innerHTML = "";
+      function selectRedactedText() {
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(outputMappingList);
+        sel.removeAllRanges();
+        sel.addRange(range);
       }
 
-      renderModeDescription();
-      renderPrimaryRisk([], "");
-      renderSecondarySignals([]);
-      renderReplacementMapping([]);
-      detectionMode.addEventListener("change", renderModeDescription);
+      /* ── Reset ──────────────────────────────────────────────────────── */
+      function resetResultPanels() {
+        S.copyText = "";
+        S.reviewSource = { kind: "text" };
+        S.redactedBlob = null;
+        S.redactedFilename = "";
+        S.origPdfDoc = null;
+        S.redactedPdfDoc = null;
+        S.fileBytes = null;
+        S.fileMimeType = "";
+        S.fileName = "";
+        S.fileSuffix = "";
+        S.fileType = "";
+        S.text = "";
+        S.spans = [];
+        detectionList.textContent = "[]";
+        renderPrimaryRisk([], "");
+        renderSecondarySignals([]);
+        renderReplacementMapping("", [], "");
+        document.getElementById("statsPanel").hidden = true;
+        document.getElementById("catSidebar").hidden = true;
+        S.activeCats = new Set();
+        S.activeSpans = new Set();
+        updateReviewSourceMeta({ kind: "text" });
+        fileComparePanel.hidden = true;
+        replacementMapping.hidden = false;
+      }
+
+      document.getElementById("catSelectAll").addEventListener("click", () => setAllCats(true));
+      document.getElementById("catClearAll").addEventListener("click", () => setAllCats(false));
+
+      // Per-span click toggle in input highlight pane
+      inputInspector.addEventListener("click", e => {
+        const span = e.target.closest("[data-span-idx]");
+        if (!span) return;
+        e.stopPropagation();
+        toggleSpan(Number(span.dataset.spanIdx));
+      });
+
+      /* ── Init ───────────────────────────────────────────────────────── */
+      modeDescription.textContent = MODE_COPY[detectionMode.value];
+      resetResultPanels();
+      refreshDebugStats();
+      setActiveInspectorTab("riskPanel");
+      setSelectedFileState();
+
+      /* ── Event listeners ────────────────────────────────────────────── */
+      detectionMode.addEventListener("change", () => {
+        modeDescription.textContent = MODE_COPY[detectionMode.value];
+      });
+
+      // Drop zone
+      dropZone.addEventListener("click", () => fileInput.click());
+      dropZone.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+      dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+      dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+      dropZone.addEventListener("drop", e => {
+        e.preventDefault();
+        dropZone.classList.remove("drag-over");
+        const file = e.dataTransfer?.files?.[0];
+        if (!file) return;
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        setSelectedFileState(file);
+        setStatus(`File selected: ${file.name}`);
+      });
+
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files[0] || null;
+        setSelectedFileState(file);
+        if (file) setStatus(`File selected: ${file.name}`);
+      });
+
+      fileClearButton.addEventListener("click", () => {
+        fileInput.value = "";
+        setSelectedFileState();
+        setStatus("File cleared. Text review is active again.");
+      });
+
+      inspectorTabs.addEventListener("click", e => {
+        const btn = e.target.closest("[data-inspector-target]");
+        if (btn) setActiveInspectorTab(btn.dataset.inspectorTarget);
+      });
 
       redactButton.addEventListener("click", async () => {
-        const text = sourceText.value;
         resetResultPanels();
-        setStatus("Redacting...");
+        setStatus("Preparing review…");
         redactButton.disabled = true;
         try {
-          const response = await fetch(`${API_BASE}/redact`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              text,
-              source: "manual_ui",
-              target: "ai_model",
-              mode: "warn",
-              detection_mode: detectionMode.value
-            })
-          });
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(errorText || `Request failed with status ${response.status}`);
+          if (fileInput.files[0]) {
+            setStatus("Scanning file and fetching redacted copy…");
+            await submitFileReview();
+            setStatus("File review ready. Inspect the document preview and download the redacted file.");
+          } else {
+            await submitTextReview(sourceText.value);
+            setStatus("Review ready. Inspect the highlighted input before copying the redacted output.");
           }
-          const data = await response.json();
-          riskLevel.textContent = `risk: ${data.risk_level}`;
-          spanCount.textContent = `spans: ${data.spans.length}`;
-          riskReason.textContent = data.reason;
-          detectionList.textContent = data.spans.map(formatDetection).join("\n\n");
-          redactedText.textContent = data.redacted_text;
-          renderPrimaryRisk(data.spans, data.reason);
-          renderSecondarySignals(data.spans);
-          renderReplacementMapping(data.spans);
-          setStatus("Redaction complete.");
+          showReviewView();
         } catch (error) {
           setStatus(`Redaction failed: ${getErrorMessage(error)}`, true);
+          showHomeView();
         } finally {
           redactButton.disabled = false;
         }
       });
 
       copyButton.addEventListener("click", async () => {
-        const text = redactedText.textContent;
-        if (!text) {
-          setStatus("Nothing to copy yet.", true);
-          return;
-        }
-
+        const text = S.text ? buildSelectiveRedactedText() : (S.copyText || outputMappingList.textContent);
+        if (!text) { setStatus("Nothing to copy yet.", true); return; }
         try {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
+          if (navigator.clipboard?.writeText) {
             await navigator.clipboard.writeText(text);
             setStatus("Copied redacted text.");
             return;
           }
-        } catch (error) {
-          if (copyWithFallback(text)) {
-            setStatus("Copied redacted text.");
-            return;
-          }
-          selectRedactedText();
-          setStatus("Clipboard access is unavailable here. Redacted text is selected; press Cmd+C to copy.", true);
-          return;
-        }
-
-        if (copyWithFallback(text)) {
-          setStatus("Copied redacted text.");
-          return;
-        }
-
+        } catch (_e) {}
+        if (copyWithFallback(text)) { setStatus("Copied redacted text."); return; }
         selectRedactedText();
-        setStatus("Copy failed. Select and copy manually.", true);
+        setStatus("Clipboard unavailable. Redacted text selected — press Cmd+C to copy.", true);
+      });
+
+      downloadFileButton.addEventListener("click", async () => {
+        if (!S.fileBytes) { setStatus("No redacted file available.", true); return; }
+        downloadFileButton.disabled = true;
+        try {
+          if (!S.redactedBlob) setStatus("Generating redacted file…");
+          await downloadAndPreviewFile();
+          triggerBlobDownload(S.redactedBlob, S.redactedFilename);
+          setStatus("Downloaded the redacted file.");
+        } catch (error) {
+          setStatus(`Download failed: ${getErrorMessage(error)}`, true);
+        } finally {
+          downloadFileButton.disabled = false;
+        }
+      });
+
+      backButton.addEventListener("click", () => {
+        showHomeView();
+        sourceText.focus();
+        setStatus("Editing the input buffer again.");
+      });
+
+      // PDF page navigation — original pane
+      origPdfPrev.addEventListener("click", () => {
+        if (S.origPdfCurrentPage > 1) renderPdfPageInto(ORIG_PANE, S.origPdfCurrentPage - 1);
+      });
+      origPdfNext.addEventListener("click", () => {
+        if (S.origPdfDoc && S.origPdfCurrentPage < S.origPdfDoc.numPages)
+          renderPdfPageInto(ORIG_PANE, S.origPdfCurrentPage + 1);
+      });
+      // PDF page navigation — redacted pane
+      redactedPdfPrev.addEventListener("click", () => {
+        if (S.redactedPdfCurrentPage > 1) renderPdfPageInto(REDACTED_PANE, S.redactedPdfCurrentPage - 1);
+      });
+      redactedPdfNext.addEventListener("click", () => {
+        if (S.redactedPdfDoc && S.redactedPdfCurrentPage < S.redactedPdfDoc.numPages)
+          renderPdfPageInto(REDACTED_PANE, S.redactedPdfCurrentPage + 1);
       });
     </script>
   </body>

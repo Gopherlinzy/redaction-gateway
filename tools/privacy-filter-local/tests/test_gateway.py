@@ -1,7 +1,9 @@
+import os
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from app import app, collect_spans
+import app as app_module
+from app import app, collect_spans, get_request_metrics_snapshot, prewarm_runtime, _record_request_timing, _filter_opf_url_false_positives
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -13,24 +15,198 @@ def test_health_endpoint_returns_ok() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_ready_endpoint_returns_runtime_snapshot() -> None:
+    client = TestClient(app)
+
+    with patch(
+        "app.get_runtime_status_snapshot",
+        return_value={"status": "ready", "runtime_ready": True, "prewarm_succeeded": True},
+    ):
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["runtime_ready"] is True
+
+
+def test_ready_endpoint_returns_503_until_runtime_is_ready() -> None:
+    client = TestClient(app)
+
+    with patch(
+        "app.get_runtime_status_snapshot",
+        return_value={"status": "warming", "runtime_ready": False, "prewarm_succeeded": False},
+    ):
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "warming"
+
+
+def test_stats_endpoint_returns_runtime_cache_and_request_metrics() -> None:
+    client = TestClient(app)
+
+    with patch(
+        "app.get_runtime_status_snapshot",
+        return_value={"status": "ready", "runtime_ready": True},
+    ), patch(
+        "app.get_runtime_cache_stats",
+        return_value={"entries": 1, "hits": 2, "misses": 1},
+    ), patch(
+        "app.get_request_metrics_snapshot",
+        return_value={"total_requests": 3, "recent_count": 3},
+    ):
+        response = client.get("/stats")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"]["status"] == "ready"
+    assert response.json()["cache"]["hits"] == 2
+    assert response.json()["requests"]["total_requests"] == 3
+
+
+def test_request_metrics_snapshot_groups_timing_by_endpoint_and_length_bucket() -> None:
+    app_module._request_timings.clear()
+    app_module._request_count = 0
+    app_module._last_request_timing = None
+
+    _record_request_timing(
+        {
+            "endpoint": "/redact",
+            "text_length": 48,
+            "opf_seconds": 0.6,
+            "parser_seconds": 0.001,
+            "regex_seconds": 0.001,
+            "merge_seconds": 0.001,
+            "total_seconds": 0.603,
+            "span_count": 2,
+            "detection_mode": "balanced",
+        }
+    )
+    _record_request_timing(
+        {
+            "endpoint": "/redact",
+            "text_length": 1200,
+            "opf_seconds": 1.2,
+            "parser_seconds": 0.002,
+            "regex_seconds": 0.002,
+            "merge_seconds": 0.001,
+            "total_seconds": 1.205,
+            "span_count": 3,
+            "detection_mode": "balanced",
+        }
+    )
+
+    snapshot = get_request_metrics_snapshot()
+
+    assert snapshot["buckets"]["/redact"]["0-255"]["count"] == 1
+    assert snapshot["buckets"]["/redact"]["1024-4095"]["count"] == 1
+
+
+def test_request_metrics_snapshot_groups_timing_by_hit_type_bucket() -> None:
+    app_module._request_timings.clear()
+    app_module._request_count = 0
+    app_module._last_request_timing = None
+
+    _record_request_timing(
+        {
+            "endpoint": "/redact",
+            "text_length": 48,
+            "opf_seconds": 0.6,
+            "parser_seconds": 0.001,
+            "regex_seconds": 0.001,
+            "merge_seconds": 0.001,
+            "total_seconds": 0.603,
+            "span_count": 2,
+            "secret_count": 2,
+            "pii_count": 0,
+            "detection_mode": "balanced",
+        }
+    )
+    _record_request_timing(
+        {
+            "endpoint": "/redact",
+            "text_length": 128,
+            "opf_seconds": 0.8,
+            "parser_seconds": 0.001,
+            "regex_seconds": 0.001,
+            "merge_seconds": 0.001,
+            "total_seconds": 0.803,
+            "span_count": 2,
+            "secret_count": 1,
+            "pii_count": 1,
+            "detection_mode": "balanced",
+        }
+    )
+
+    snapshot = get_request_metrics_snapshot()
+
+    assert snapshot["hit_type_buckets"]["/redact"]["secret_only"]["count"] == 1
+    assert snapshot["hit_type_buckets"]["/redact"]["mixed"]["count"] == 1
+
+
+def test_prewarm_runtime_calls_detect_when_enabled() -> None:
+    with patch.dict(os.environ, {"PRIVACY_FILTER_PREWARM_ON_STARTUP": "1"}, clear=True), patch(
+        "app.detect_with_runtime",
+        return_value=[],
+    ) as detect_runtime:
+        assert prewarm_runtime() is True
+
+    detect_runtime.assert_called_once()
+
+
+def test_prewarm_runtime_skips_during_pytest() -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "PRIVACY_FILTER_PREWARM_ON_STARTUP": "1",
+            "PYTEST_CURRENT_TEST": "tests/test_gateway.py::test_prewarm_runtime_skips_during_pytest",
+        },
+        clear=True,
+    ), patch("app.detect_with_runtime", return_value=[]) as detect_runtime:
+        assert prewarm_runtime() is False
+
+    detect_runtime.assert_not_called()
+
+
+def test_collect_spans_logs_timing_breakdown_when_enabled() -> None:
+    with patch.dict(os.environ, {"PRIVACY_FILTER_TIMING_LOGS": "1"}, clear=True), patch(
+        "app.detect_with_runtime",
+        return_value=[],
+    ), patch(
+        "app.generate_secret_candidates",
+        return_value=[],
+    ), patch(
+        "app.filter_candidates_for_mode",
+        return_value=[],
+    ), patch(
+        "app.detect_regex_secret_spans",
+        return_value=[],
+    ), patch("app.logger.info") as log_info:
+        assert collect_spans("hello", "balanced") == []
+
+    log_info.assert_called_once()
+    assert "collect_spans timings" in log_info.call_args.args[0]
+
+
 def test_scan_uses_runtime_and_returns_spans() -> None:
     client = TestClient(app)
+    # Text must exceed OPF_SKIP_THRESHOLD (500 chars) so _detect_opf_async calls the runtime
+    long_text = "user@example.com " + "x" * 500
 
     with patch(
         "app.detect_with_runtime",
         return_value=[
             {
                 "start": 0,
-                "end": 5,
+                "end": 16,
                 "label": "private_email",
                 "source": "opf",
-                "text": "a@b.c",
+                "text": "user@example.com",
             }
         ],
     ):
         response = client.post(
             "/scan",
-            json={"text": "a@b.c", "source": "manual_ui", "target": "ai_model", "mode": "warn"},
+            json={"text": long_text, "source": "manual_ui", "target": "ai_model", "mode": "warn"},
         )
 
     assert response.status_code == 200
@@ -50,7 +226,10 @@ def test_decide_endpoint_warns_secret_for_ai_model() -> None:
         }
     ]
 
-    with patch("app.collect_spans", return_value=spans):
+    with patch("app.collect_spans", return_value=spans), patch(
+        "app.get_last_request_timing",
+        return_value={"total_seconds": 0.1},
+    ):
         response = client.post(
             "/decide",
             json={
@@ -65,6 +244,7 @@ def test_decide_endpoint_warns_secret_for_ai_model() -> None:
     assert response.status_code == 200
     assert response.json()["decision"] == "warn"
     assert response.json()["risk_level"] == "high"
+    assert response.json()["timings"]["total_seconds"] == 0.1
 
 
 def test_redact_endpoint_replaces_sensitive_text() -> None:
@@ -79,7 +259,10 @@ def test_redact_endpoint_replaces_sensitive_text() -> None:
         }
     ]
 
-    with patch("app.collect_spans", return_value=spans):
+    with patch("app.collect_spans", return_value=spans), patch(
+        "app.get_last_request_timing",
+        return_value={"total_seconds": 0.2},
+    ):
         response = client.post(
             "/redact",
             json={"text": "email: a@b.c", "source": "manual_ui", "target": "ai_model", "mode": "warn"},
@@ -87,6 +270,7 @@ def test_redact_endpoint_replaces_sensitive_text() -> None:
 
     assert response.status_code == 200
     assert "<PRIVATE_EMAIL>" in response.json()["redacted_text"]
+    assert response.json()["timings"]["total_seconds"] == 0.2
 
 
 def test_collect_spans_prefers_secret_on_overlap() -> None:
@@ -179,9 +363,9 @@ def test_collect_spans_prefers_parser_value_spans_over_broad_opf_secret() -> Non
             "source": "parser_rule",
             "score": 0.9,
             "reason_codes": ["structure_match", "value_shape_match"],
-            "start": 109,
-            "end": 160,
-            "text": "postgres://appuser:supersecret@db.internal:5432/app",
+            "start": 128,
+            "end": 139,
+            "text": "supersecret",
         },
     ]
 
@@ -196,12 +380,16 @@ def test_root_serves_manual_ui() -> None:
     assert "textarea" in response.text
     assert "Copy Redacted Text" in response.text
     assert "Detections" in response.text
+    assert "Debug Timing And Cache" in response.text
 
 
 def test_redact_response_contains_decision_metadata() -> None:
     client = TestClient(app)
 
-    with patch("app.collect_spans", return_value=[]):
+    with patch("app.collect_spans", return_value=[]), patch(
+        "app.get_last_request_timing",
+        return_value={"total_seconds": 0.3},
+    ):
         response = client.post(
             "/redact",
             json={"text": "hello", "source": "manual_ui", "target": "local_review", "mode": "warn"},
@@ -210,6 +398,7 @@ def test_redact_response_contains_decision_metadata() -> None:
     assert response.status_code == 200
     assert "decision" in response.json()
     assert "risk_level" in response.json()
+    assert response.json()["timings"]["total_seconds"] == 0.3
 
 
 def test_redact_uses_parser_candidates_when_runtime_unavailable() -> None:
@@ -296,6 +485,126 @@ def test_redact_preserves_assignment_keys_and_only_replaces_values() -> None:
     )
 
 
+def test_redact_masks_mongodb_srv_password_when_runtime_unavailable() -> None:
+    client = TestClient(app)
+    text = "mongodb+srv://analytics:AnalyTics!Pass@cluster0.abcde.mongodb.net/prod"
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == "mongodb+srv://analytics:<SECRET>@cluster0.abcde.mongodb.net/prod"
+
+
+def test_redact_masks_private_key_block_as_single_placeholder_when_runtime_unavailable() -> None:
+    client = TestClient(app)
+    text = "-----BEGIN RSA PRIVATE KEY-----\nMIICWwIBAAKBgQCqGK7UO5jX4Z...\n-----END RSA PRIVATE KEY-----"
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == "<SECRET>"
+
+
+def test_redact_masks_full_hf_token_value_when_runtime_unavailable() -> None:
+    client = TestClient(app)
+    text = "HF_TOKEN = hf_ThisIsATestTokenWithPad_1234567890ABCDEF"
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == "HF_TOKEN = <SECRET>"
+
+
+def test_redact_preserves_cookie_name_while_masking_refresh_token_value() -> None:
+    client = TestClient(app)
+    text = "Set-Cookie: refresh_token=7a8s9d0f1g2h3j4k5l6; HttpOnly; Path=/; SameSite=Strict"
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == "Set-Cookie: refresh_token=<SECRET>; HttpOnly; Path=/; SameSite=Strict"
+
+
+def test_redact_preserves_signing_key_assignment_shape_with_single_placeholder() -> None:
+    client = TestClient(app)
+    text = 'signing_key = "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADAN...\\n-----END PRIVATE KEY-----"'
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == 'signing_key = "<SECRET>"'
+
+
+def test_redact_preserves_db_connection_shape_and_masks_only_password() -> None:
+    client = TestClient(app)
+    text = "DATABASE_URL=postgres://appuser:supersecret@db.internal:5432/app"
+
+    with patch("app.detect_with_runtime", side_effect=RuntimeError("checkpoint incomplete")):
+        response = client.post(
+            "/redact",
+            json={
+                "text": text,
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+                "detection_mode": "balanced",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["redacted_text"] == "DATABASE_URL=postgres://appuser:<SECRET>@db.internal:5432/app"
+
+
 def test_root_ui_includes_status_feedback_and_copy_fallback() -> None:
     client = TestClient(app)
 
@@ -318,9 +627,52 @@ def test_root_ui_includes_industrial_console_sections() -> None:
     assert 'id="riskPanel"' in response.text
     assert 'id="nextStepPanel"' in response.text
     assert 'id="replacementMapping"' in response.text
+    assert 'id="inputInspector"' in response.text
     assert "Input Buffer" in response.text
     assert "Recommended Next Step" in response.text
-    assert "Replacement Mapping" in response.text
+    assert "Redacted Review" in response.text
+
+
+def test_root_ui_replacement_mapping_uses_before_after_layout_and_label_legend() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Input Highlight → Redacted" in response.text
+    assert "Input Highlight" in response.text
+    assert "Redacted" in response.text
+    assert "Email" in response.text
+    assert "URL" in response.text
+    assert "Secret" in response.text
+
+
+def test_root_ui_uses_clickable_inspector_tabs_with_runtime_visible() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="inspectorTabs"' in response.text
+    assert 'data-inspector-target="riskPanel"' in response.text
+    assert 'data-inspector-target="runtimePanel"' in response.text
+    assert "function setActiveInspectorTab" in response.text
+    assert '<details id="debugPanel">' not in response.text
+    assert 'id="runtimePanel"' in response.text
+
+
+def test_root_ui_uses_fixed_scrollable_text_surfaces() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "--surface-height-lg:" in response.text
+    assert "--surface-height-md:" in response.text
+    assert "resize: none;" in response.text
+    assert "overflow: auto;" in response.text
+    assert "height: var(--surface-height-lg);" in response.text
+    assert "height: var(--surface-height-md);" in response.text
 
 
 def test_root_ui_includes_score_and_reason_debug_fields() -> None:
@@ -361,10 +713,10 @@ def test_root_ui_includes_explanation_first_helpers() -> None:
     assert response.status_code == 200
     assert "function buildRecommendationMessage" in response.text
     assert "function renderReplacementMapping" in response.text
+    assert "function summarizeSecretKinds" in response.text
     assert "Detected secret. Replace it before sending externally." in response.text
     assert "Detected private email. Redact it if the text will leave local review." in response.text
-    assert "红线 = 原文里将被替换掉的敏感内容" in response.text
-    assert "绿线 = 脱敏后保留下来的安全占位符" in response.text
+    assert "左侧显示输入中的命中片段；右侧保留可直接复制的脱敏结果。" in response.text
 
 
 def test_root_ui_includes_detection_mode_selector() -> None:
@@ -401,6 +753,87 @@ def test_root_ui_supports_file_protocol_api_base() -> None:
     assert response.status_code == 200
     assert 'const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:7861" : "";' in response.text
     assert 'fetch(`${API_BASE}/redact`' in response.text
+
+
+def test_root_ui_includes_file_upload_entry_and_review_metadata() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="fileInput"' in response.text
+    assert "Upload PDF or DOCX" in response.text
+    assert 'id="selectedFileName"' in response.text
+    assert 'id="reviewFileMeta"' in response.text
+    assert "pdf / docx review" in response.text
+
+
+def test_root_ui_posts_multipart_form_data_to_redact_file() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'const file = fileInput.files[0];' in response.text
+    assert 'new FormData()' in response.text
+    assert '.append("file",' in response.text
+    assert 'fetch(`${API_BASE}/redact-file`' in response.text
+
+
+def test_root_ui_includes_download_redacted_file_action() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="downloadFileButton"' in response.text
+    assert "Download Redacted File" in response.text
+
+
+def test_root_ui_posts_multipart_form_data_to_redact_file_download() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'fetch(`${API_BASE}/redact-file/download`' in response.text
+    assert 'URL.createObjectURL' in response.text
+    assert 'link.download = filename;' in response.text
+
+
+def test_root_ui_includes_stats_panel() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="statsPanel"' in response.text
+    assert 'statsPiiPct' in response.text
+    assert 'statsSpanCount' in response.text
+    assert 'renderStats' in response.text
+
+
+def test_root_ui_includes_category_sidebar() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="catSidebar"' in response.text
+    assert 'id="catList"' in response.text
+    assert 'catSelectAll' in response.text
+    assert 'catClearAll' in response.text
+
+
+def test_root_ui_includes_toggle_cat_function() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'function toggleCat(' in response.text
+    assert 'data-cat=' in response.text
+    assert '.entity.off' in response.text
 
 
 def test_cors_preflight_allows_file_protocol_requests() -> None:
@@ -457,3 +890,46 @@ def test_redact_endpoint_returns_secret_first_output_with_secondary_pii() -> Non
     assert response.json()["spans"][0]["label"] == "secret"
     assert "<SECRET>" in response.json()["redacted_text"]
     assert "<PRIVATE_EMAIL>" in response.json()["redacted_text"]
+
+
+def test_opf_url_false_positive_filter_removes_url_secret_spans() -> None:
+    spans = [
+        {"label": "secret", "source": "opf", "start": 20, "end": 80,
+         "text": "https://docs.example.com/api?api_key=demo&token=example"},
+        {"label": "secret", "source": "opf", "start": 0, "end": 15,
+         "text": "sk-realkey12345"},
+        {"label": "private_email", "source": "opf", "start": 85, "end": 105,
+         "text": "https://url-as-pii.com"},
+    ]
+
+    result = _filter_opf_url_false_positives(spans)
+
+    texts = [s["text"] for s in result]
+    assert "sk-realkey12345" in texts
+    assert "https://docs.example.com/api?api_key=demo&token=example" not in texts
+    assert "https://url-as-pii.com" in texts
+
+
+def test_opf_url_secret_not_redacted_via_collect_spans() -> None:
+    client = TestClient(app)
+    url_secret_span = {
+        "label": "secret", "source": "opf", "start": 18, "end": 72,
+        "text": "https://docs.example.com/api?api_key=demo&token=example",
+        "placeholder": "<SECRET>",
+    }
+
+    with patch("app.detect_with_runtime", return_value=[url_secret_span]):
+        response = client.post(
+            "/redact",
+            json={
+                "text": 'public_docs_url = "https://docs.example.com/api?api_key=demo&token=example"',
+                "source": "manual_ui",
+                "target": "ai_model",
+                "mode": "warn",
+            },
+        )
+
+    assert response.status_code == 200
+    redacted = response.json()["redacted_text"]
+    assert "https://docs.example.com" in redacted
+    assert "<SECRET>" not in redacted

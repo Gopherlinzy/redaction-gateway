@@ -3,7 +3,7 @@ import re
 KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_-]*"
 
 ASSIGNMENT_PATTERN = re.compile(
-    r"^(?P<prefix>export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"^[+ -]?(?P<prefix>export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P<separator>\s*=\s*)"
     r"(?P<quote_char>['\"]?)(?P<value>.*?)(?P=quote_char)$"
 )
@@ -12,14 +12,20 @@ AUTHORIZATION_PATTERN = re.compile(
     r"(?P<auth_scheme>Bearer)\s+(?P<value>.+)$",
     re.IGNORECASE,
 )
+GENERIC_API_HEADER_PATTERN = re.compile(
+    r"^(?P<header_name>X-API-Key|X-Auth-Token|X-Access-Token|X-Secret-Key|X-Client-Secret)"
+    r"(?P<separator>:\s+)"
+    r"(?P<value>.+)$",
+    re.IGNORECASE,
+)
 COOKIE_HEADER_PATTERN = re.compile(r"^(?P<header_name>Cookie|Set-Cookie):\s+", re.IGNORECASE)
 COOKIE_PAIR_PATTERN = re.compile(
     rf"(?P<cookie_name>{KEY_PATTERN})(?P<separator>=)(?P<value>[^;\s]+)"
 )
 JSON_PAIR_PATTERN = re.compile(
-    rf'^(?P<key_quote>")(?P<key>{KEY_PATTERN})'
-    r'(?P=key_quote)(?P<separator>:\s+)'
-    r'(?P<raw_value>.+)$'
+    rf'(?P<key_quote>")(?P<key>{KEY_PATTERN})'
+    r'(?P=key_quote)(?P<separator>:\s*)'
+    r'(?P<raw_value>"[^"]*"|[^\s,\}]+)'
 )
 YAML_PAIR_PATTERN = re.compile(
     rf"^(?P<key>{KEY_PATTERN})"
@@ -100,6 +106,20 @@ def _parse_assignment(line: str, line_start: int, line_end: int) -> dict[str, ob
 
 def _parse_http_header(line: str, line_start: int, line_end: int) -> dict[str, object] | None:
     match = AUTHORIZATION_PATTERN.match(line)
+    if match:
+        result = _base_fragment(line, line_start, line_end, "http_header")
+        result.update(
+            {
+                "header_name": match.group("header_name"),
+                "auth_scheme": match.group("auth_scheme"),
+                "separator": match.group("separator"),
+                "value": match.group("value"),
+                "value_span": (line_start + match.start("value"), line_start + match.end("value")),
+            }
+        )
+        return result
+
+    match = GENERIC_API_HEADER_PATTERN.match(line)
     if not match:
         return None
 
@@ -107,7 +127,7 @@ def _parse_http_header(line: str, line_start: int, line_end: int) -> dict[str, o
     result.update(
         {
             "header_name": match.group("header_name"),
-            "auth_scheme": match.group("auth_scheme"),
+            "auth_scheme": "",
             "separator": match.group("separator"),
             "value": match.group("value"),
             "value_span": (line_start + match.start("value"), line_start + match.end("value")),
@@ -138,24 +158,23 @@ def _parse_cookie_pair(line: str, line_start: int, line_end: int) -> list[dict[s
     return fragments
 
 
-def _parse_json_pair(line: str, line_start: int, line_end: int) -> dict[str, object] | None:
-    match = JSON_PAIR_PATTERN.match(line)
-    if not match:
-        return None
-
-    quote_char, value = _parse_scalar_value(match.group("raw_value"))
-    result = _base_fragment(line, line_start, line_end, "json_yaml_pair")
-    result.update(
-        {
-            "container_kind": "json",
-            "key": match.group("key"),
-            "separator": match.group("separator"),
-            "value": value,
-            "quote_char": quote_char,
-            "value_span": _value_span(line_start, match.start("raw_value"), match.group("raw_value"), quote_char),
-        }
-    )
-    return result
+def _parse_json_pair(line: str, line_start: int, line_end: int) -> list[dict[str, object]] | None:
+    fragments: list[dict[str, object]] = []
+    for match in JSON_PAIR_PATTERN.finditer(line):
+        quote_char, value = _parse_scalar_value(match.group("raw_value"))
+        result = _base_fragment(line, line_start, line_end, "json_yaml_pair")
+        result.update(
+            {
+                "container_kind": "json",
+                "key": match.group("key"),
+                "separator": match.group("separator"),
+                "value": value,
+                "quote_char": quote_char,
+                "value_span": _value_span(line_start, match.start("raw_value"), match.group("raw_value"), quote_char),
+            }
+        )
+        fragments.append(result)
+    return fragments or None
 
 
 def _parse_yaml_pair(line: str, line_start: int, line_end: int) -> dict[str, object] | None:
