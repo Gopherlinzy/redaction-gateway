@@ -19,7 +19,7 @@ python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 ./.venv/bin/python -m pytest -v
 ```
 
-133 个测试，覆盖网关路由、策略层、正则检测、结构解析、OPF 运行时、文件脱敏。
+162 个测试，覆盖网关路由、策略层、正则检测、结构解析、OPF 运行时、文件脱敏、PDF 分块提取。
 
 ## API 路由
 
@@ -113,10 +113,10 @@ python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 
 ## 已知局限
 
-- **OPF 不可用**：邮箱、手机、姓名、地址检测失效，无正则兜底
-- **`detection_mode` strict/permissive**：均映射到 `balanced`，三档未完全接入
-- **YAML 块标量**（`|` / `>` 多行）：单行解析器无法跨行
-- **Azure SAS token / Google Cloud 服务账号 JSON**：无覆盖
+- **OPF 不可用**（已改善）：OPF 失效时，中文姓名、地址、银行卡号、统一社会信用代码由关键词锚正则兜底检测；邮箱、手机由原有正则覆盖。OPF 降级状态通过 `opf_available` 字段暴露，UI Inspector > Runtime 面板显示警告条。
+- **`detection_mode` strict/permissive**（已修复）：`strict` 映射 `high_precision`（score 阈值 0.8，跳过低置信度 token），`permissive` 映射 `high_recall`（score 阈值 0.6，放宽弱上下文匹配），三档完全差异化。
+- **YAML 块标量**（已修复）：`structured_parser.py` 新增状态机，识别 `key: |` / `key: >` 并累积缩进行，跨行 PEM / token 现可被 `parser_rule` 层检测。
+- **Azure SAS token / Google Cloud 服务账号 JSON**（已修复）：新增 `azure_sas`（sig= 参数）、`azure_storage_key`（AccountKey=）、`gcp_service_account`（private_key_id 和 private_key 字段）四条正则，score 0.85–0.95。
 - `adapters/` 目录（`linear.py`、`symphony.py`）为预留存根，路由尚未接入
 
 ## 设计约束
