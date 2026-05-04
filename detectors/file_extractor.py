@@ -76,6 +76,63 @@ _EXTRACTORS = {
     ".docx": _extract_docx,
 }
 
+# 分块的最小字符数（短行合并到下一块，避免 OPF 在单词片段上产生误判）
+_CHUNK_MIN_CHARS = 40
+# 分块最大字符数（超过此长度强制切分，防止 OPF 截断）
+_CHUNK_MAX_CHARS = 1200
+# sliding window 上下文行数（chunk 前后各取 N 行拼入 OPF 输入，但 span 坐标仍基于 chunk）
+_CONTEXT_LINES = 2
+
+
+def extract_chunks(full_text: str) -> list[tuple[str, int]]:
+    """
+    将全文按段落/行拆分为 (chunk_text, start_offset) 列表。
+
+    - 行太短时向后合并（< _CHUNK_MIN_CHARS）
+    - 行太长时强制按 _CHUNK_MAX_CHARS 切分
+    - start_offset 是 chunk_text 在 full_text 中的起始字符偏移
+
+    调用方用 start_offset 把 OPF 返回的 span.start/end 还原到全文坐标。
+    """
+    lines: list[tuple[str, int]] = []
+    pos = 0
+    for raw_line in full_text.splitlines(keepends=True):
+        lines.append((raw_line, pos))
+        pos += len(raw_line)
+
+    chunks: list[tuple[str, int]] = []
+    buf = ""
+    buf_start = 0
+
+    def _flush(text: str, start: int) -> None:
+        text = text.rstrip("\n")
+        if text.strip():
+            # 超长则按 _CHUNK_MAX_CHARS 切分
+            while len(text) > _CHUNK_MAX_CHARS:
+                chunks.append((text[:_CHUNK_MAX_CHARS], start))
+                text = text[_CHUNK_MAX_CHARS:]
+                start += _CHUNK_MAX_CHARS
+            if text.strip():
+                chunks.append((text, start))
+
+    for line_text, line_start in lines:
+        stripped = line_text.strip()
+        if not stripped:
+            _flush(buf, buf_start)
+            buf = ""
+            buf_start = line_start + len(line_text)
+            continue
+        if not buf:
+            buf_start = line_start
+        buf += line_text
+        if len(buf.rstrip()) >= _CHUNK_MIN_CHARS:
+            _flush(buf, buf_start)
+            buf = ""
+            buf_start = line_start + len(line_text)
+
+    _flush(buf, buf_start)
+    return chunks
+
 
 def extract_text(path: str, suffix: str | None = None) -> str:
     ext = (suffix or Path(path).suffix).lower()

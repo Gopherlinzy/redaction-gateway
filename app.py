@@ -22,6 +22,7 @@ from detectors.secret_scores import filter_candidates_for_mode
 from detectors.regex_backstop import detect_regex_secret_spans, detect_regex_pii_spans
 from detectors.file_extractor import (
     extract_text,
+    extract_chunks,
     redact_pdf_bytes,
     redact_docx_bytes,
     UnsupportedFileTypeError,
@@ -367,6 +368,57 @@ async def _detect_opf_async(text: str) -> tuple[list[dict[str, object]], float, 
         return [], perf_counter() - start, False
 
 
+def _run_opf_on_chunk(chunk_text: str, offset: int) -> list[dict[str, object]]:
+    """Run OPF on one chunk and shift span offsets to full-text coordinates."""
+    try:
+        spans = detect_with_runtime(chunk_text)
+    except Exception as exc:
+        logger.warning("OPF chunk detection failed (offset=%d): %s", offset, exc)
+        return []
+    shifted: list[dict[str, object]] = []
+    for sp in spans:
+        sp = dict(sp)
+        sp["start"] = int(sp["start"]) + offset
+        sp["end"] = int(sp["end"]) + offset
+        # re-materialize text from shifted coordinates is handled by merge_spans caller
+        shifted.append(sp)
+    return shifted
+
+
+async def _detect_opf_chunked(
+    full_text: str,
+    chunks: list[tuple[str, int]],
+) -> tuple[list[dict[str, object]], float, bool]:
+    """
+    Run OPF per paragraph chunk and merge results into full-text offsets.
+    Falls back to whole-text OPF when chunks are unavailable.
+    Returns (spans, elapsed_seconds, opf_available).
+    """
+    if not chunks:
+        return await _detect_opf_async(full_text)
+
+    loop = asyncio.get_event_loop()
+    start = perf_counter()
+    all_spans: list[dict[str, object]] = []
+    opf_available = True
+
+    for chunk_text, offset in chunks:
+        if len(chunk_text) < OPF_SKIP_THRESHOLD:
+            continue
+        try:
+            chunk_spans = await loop.run_in_executor(
+                _opf_executor, _run_opf_on_chunk, chunk_text, offset
+            )
+            all_spans.extend(chunk_spans)
+            _mark_runtime_ready("request")
+        except Exception as exc:
+            logger.warning("OPF chunked detection unavailable: %s", exc)
+            opf_available = False
+            break
+
+    return all_spans, perf_counter() - start, opf_available
+
+
 def collect_spans(
     text: str,
     detection_mode: str = DETECTION_MODE_DEFAULT,
@@ -561,7 +613,8 @@ async def redact_file(
         if not text.strip():
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        opf_spans, opf_seconds, opf_available = await _detect_opf_async(text)
+        chunks = extract_chunks(text)
+        opf_spans, opf_seconds, opf_available = await _detect_opf_chunked(text, chunks)
         spans = collect_spans(text, detection_mode, endpoint="/redact-file",
                               precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
         decision = decide_action(spans, source, target, mode)
@@ -624,7 +677,8 @@ async def redact_file_download(
         if not text.strip():
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        opf_spans, opf_seconds, _opf_av = await _detect_opf_async(text)
+        chunks = extract_chunks(text)
+        opf_spans, opf_seconds, _opf_av = await _detect_opf_chunked(text, chunks)
         spans = collect_spans(text, detection_mode, endpoint="/redact-file/download",
                               precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
 
