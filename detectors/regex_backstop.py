@@ -230,8 +230,15 @@ def build_secret_span(match: re.Match[str], kind: str, group: int = 0) -> dict[s
     }
 
 
+_MODE_ALIASES: dict[str, str] = {
+    "strict":     "high_precision",
+    "permissive": "high_recall",
+}
+
+
 def normalize_detection_mode(detection_mode: str) -> str:
-    return detection_mode if detection_mode in MODE_CONFIG else "balanced"
+    mode = _MODE_ALIASES.get(detection_mode, detection_mode)
+    return mode if mode in MODE_CONFIG else "balanced"
 
 
 _CN_PII_SPECS = [
