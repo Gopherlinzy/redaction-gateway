@@ -581,6 +581,7 @@
       .debug-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .debug-card { display: grid; gap: 8px; }
       .debug-meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+      .opf-warning-banner { padding: 8px 12px; margin-bottom: 10px; border-radius: 4px; font-size: 12px; background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.4); color: #ca8a04; }
       .empty-state { display: block; }
 
       /* ── PDF / DOCX rendering shared utilities ──────────────────────── */
@@ -872,6 +873,9 @@
 
             <section id="runtimePanel" class="inspector-panel" hidden role="tabpanel">
               <div class="section-label">Runtime</div>
+              <div id="opfWarningBanner" hidden class="opf-warning-banner" role="alert">
+                ⚠ OPF 语义模型不可用 — 当前仅基础正则检测，邮箱、手机、姓名、地址可能漏检
+              </div>
               <div class="mapping-label">Debug Timing And Cache</div>
               <div id="debugPanel" class="debug-grid">
                 <section class="debug-card">
@@ -1567,6 +1571,12 @@
       }
 
       /* ── Review state apply ─────────────────────────────────────────── */
+      function renderOpfStatus(opfAvailable) {
+        const banner = document.getElementById("opfWarningBanner");
+        if (!banner) return;
+        banner.hidden = opfAvailable !== false;
+      }
+
       function applyReviewResponse(data, reviewText, sourceDetails = { kind: "text" }) {
         S.copyText = data.redacted_text || "";
         S.text = reviewText;
@@ -1587,6 +1597,7 @@
         renderStats(reviewText, data.spans);
         renderCatSidebar(data.spans);
         renderRequestTiming(data.timings);
+        renderOpfStatus(data.opf_available);
         refreshDebugStats(data.timings);
         updateReviewSourceMeta(sourceDetails);
         // Mode-aware panel visibility
