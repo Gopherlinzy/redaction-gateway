@@ -269,3 +269,41 @@ def test_cn_address_anchor_value_excludes_key() -> None:
     assert len(addr_spans) == 1
     assert "地址" not in addr_spans[0]["text"]
     assert "：" not in addr_spans[0]["text"]
+
+
+# ── Azure SAS / GCP 服务账号 ─────────────────────────────────────────────────
+
+def test_detects_azure_sas_sig_parameter() -> None:
+    text = "https://myaccount.blob.core.windows.net/mycontainer/myblob?sv=2020-08-04&se=2024-01-01T00%3A00%3A00Z&sig=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG%3D"
+    spans = detect_regex_secret_spans(text, "balanced")
+    sas_spans = [s for s in spans if s["kind"] == "azure_sas"]
+    assert len(sas_spans) == 1
+    assert "sig=" not in sas_spans[0]["text"]
+
+
+def test_detects_azure_storage_account_key() -> None:
+    # 64-byte key → 86 base64 chars + "==" (total 88)
+    key88 = "A" * 86 + "=="
+    assert len(key88) == 88
+    text = f"DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey={key88};EndpointSuffix=core.windows.net"
+    spans = detect_regex_secret_spans(text, "balanced")
+    key_spans = [s for s in spans if s["kind"] == "azure_storage_key"]
+    assert len(key_spans) == 1
+    assert key_spans[0]["score"] == 0.95
+
+
+def test_detects_gcp_service_account_private_key_id() -> None:
+    text = '{"type":"service_account","private_key_id":"1234567890abcdef1234567890abcdef12345678"}'
+    spans = detect_regex_secret_spans(text, "balanced")
+    gcp_spans = [s for s in spans if s["kind"] == "gcp_service_account"]
+    assert len(gcp_spans) == 1
+    assert gcp_spans[0]["text"] == "1234567890abcdef1234567890abcdef12345678"
+    assert gcp_spans[0]["score"] == 0.95
+
+
+def test_detects_gcp_service_account_private_key_pem() -> None:
+    text = '{"private_key":"-----BEGIN RSA PRIVATE KEY-----\\nMIICWwIBAAKBgQ\\n-----END RSA PRIVATE KEY-----\\n"}'
+    spans = detect_regex_secret_spans(text, "balanced")
+    gcp_spans = [s for s in spans if s["kind"] == "gcp_service_account"]
+    assert len(gcp_spans) == 1
+    assert "PRIVATE KEY" in gcp_spans[0]["text"]

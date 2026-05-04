@@ -65,6 +65,42 @@ SECRET_PATTERN_SPECS = [
         "group": 1,
     },
 
+    # ── Cloud-provider tokens ────────────────────────────────────────────
+    # Azure Blob/Queue/Table SAS token (sig= parameter, base64url ~44 chars)
+    {
+        "kind": "azure_sas",
+        "pattern": re.compile(
+            r"(?:[?&;])sig=([A-Za-z0-9%+/]{40,}(?:={0,2}))",
+            re.IGNORECASE,
+        ),
+        "group": 1,
+    },
+    # Azure Storage Account key (88-char base64, embedded in connection strings)
+    {
+        "kind": "azure_storage_key",
+        "pattern": re.compile(
+            r"AccountKey=([A-Za-z0-9+/]{86}==)",
+        ),
+        "group": 1,
+    },
+    # GCP service account private_key_id (40-hex)
+    {
+        "kind": "gcp_service_account",
+        "pattern": re.compile(
+            r'"private_key_id"\s*:\s*"([0-9a-f]{40})"',
+            re.IGNORECASE,
+        ),
+        "group": 1,
+    },
+    # GCP service account private_key (PEM inline with \n escapes)
+    {
+        "kind": "gcp_service_account",
+        "pattern": re.compile(
+            r'"private_key"\s*:\s*"(-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\\n|[\r\n])[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----(?:\\n)?)"',
+        ),
+        "group": 1,
+    },
+
     # ── Session / DB / PEM ───────────────────────────────────────────────
     {
         "kind": "session",
@@ -127,7 +163,10 @@ SPAN_METADATA = {
     "token":            {"score": 0.75, "reason_codes": ["regex_pattern_match"]},
     "oauth_code":       {"score": 0.8,  "reason_codes": ["regex_pattern_match", "url_param_match"]},
     "aws_signature":    {"score": 0.85, "reason_codes": ["regex_pattern_match", "url_param_match"]},
-    "verification_code":{"score": 0.65, "reason_codes": ["regex_pattern_match", "context_match"]},
+    "verification_code":  {"score": 0.65, "reason_codes": ["regex_pattern_match", "context_match"]},
+    "azure_sas":          {"score": 0.85, "reason_codes": ["regex_pattern_match"]},
+    "azure_storage_key":  {"score": 0.95, "reason_codes": ["regex_pattern_match"]},
+    "gcp_service_account":{"score": 0.95, "reason_codes": ["regex_pattern_match"]},
 }
 
 CONTEXTUAL_SECRET_SPECS = {
@@ -201,8 +240,11 @@ _ENTROPY_MIN: dict[str, float] = {
     "db_connection":    2.5,
     "private_key":      0.0,   # PEM block always valid if regex matches
     "oauth_code":       3.0,
-    "aws_signature":    3.5,
-    "verification_code":0.0,
+    "aws_signature":      3.5,
+    "verification_code":  0.0,
+    "azure_sas":          3.5,
+    "azure_storage_key":  0.0,  # structure sufficient (86-char base64 + ==)
+    "gcp_service_account":0.0,  # structure sufficient (40-hex / PEM)
 }
 
 
