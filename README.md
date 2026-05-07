@@ -2,6 +2,8 @@
 
 本地脱敏网关。在文本发送到 AI 模型、聊天界面或文件外发之前，检测并脱敏 API 密钥、密码和个人信息（PII）。
 
+> **灵感来源**：[How to build scalable web apps with OpenAI's Privacy Filter](https://huggingface.co/blog/openai-privacy-filter-web-apps) — HuggingFace 官方博客，介绍如何用 OpenAI Privacy Filter (Apache 2.0, 1.5B 参数) 构建文档脱敏、图片匿名化等应用。本项目基于其核心 OPF 模型，面向本地运行场景做了多层检测融合与文件格式支持。
+
 ## 快速开始
 
 ```bash
