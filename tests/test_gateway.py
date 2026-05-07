@@ -376,7 +376,7 @@ def test_root_serves_manual_ui() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Privacy Filter Local" in response.text
+    assert "Redaction Gateway" in response.text
     assert "textarea" in response.text
     assert "Copy Redacted Text" in response.text
     assert "Detections" in response.text
@@ -801,6 +801,28 @@ def test_root_ui_posts_multipart_form_data_to_redact_file_download() -> None:
     assert 'link.download = filename;' in response.text
 
 
+def test_root_ui_appends_active_spans_in_file_download_request() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'active_spans' in response.text
+    assert 'activeSpansPayload' in response.text
+    assert 'S.activeSpans.has(i)' in response.text
+
+
+def test_root_ui_toggle_renders_from_active_spans_state() -> None:
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'S.activeSpans' in response.text
+    assert 'toggleSpan' in response.text
+    assert 'buildSelectiveRedactedText' in response.text
+
+
 def test_root_ui_includes_stats_panel() -> None:
     client = TestClient(app)
 
@@ -932,42 +954,4 @@ def test_opf_url_secret_not_redacted_via_collect_spans() -> None:
     assert response.status_code == 200
     redacted = response.json()["redacted_text"]
     assert "https://docs.example.com" in redacted
-
-
-def test_redact_response_contains_opf_available_true_when_opf_works() -> None:
-    client = TestClient(app)
-
-    with patch("app.detect_with_runtime", return_value=[]):
-        response = client.post(
-            "/redact",
-            json={"text": "no secrets here", "source": "manual_ui", "target": "ai_model", "mode": "warn"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["opf_available"] is True
-
-
-def test_redact_response_contains_opf_available_false_when_opf_fails() -> None:
-    client = TestClient(app)
-
-    with patch("app.detect_with_runtime", side_effect=RuntimeError("model unavailable")):
-        response = client.post(
-            "/redact",
-            json={"text": "no secrets here " * 40, "source": "manual_ui", "target": "ai_model", "mode": "warn"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["opf_available"] is False
-
-
-def test_scan_response_contains_opf_available_field() -> None:
-    client = TestClient(app)
-
-    with patch("app.detect_with_runtime", return_value=[]):
-        response = client.post(
-            "/scan",
-            json={"text": "no secrets here", "source": "manual_ui", "target": "ai_model", "mode": "warn"},
-        )
-
-    assert response.status_code == 200
-    assert "opf_available" in response.json()
+    assert "<SECRET>" not in redacted

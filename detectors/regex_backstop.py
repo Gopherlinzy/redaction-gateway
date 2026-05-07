@@ -65,42 +65,6 @@ SECRET_PATTERN_SPECS = [
         "group": 1,
     },
 
-    # ── Cloud-provider tokens ────────────────────────────────────────────
-    # Azure Blob/Queue/Table SAS token (sig= parameter, base64url ~44 chars)
-    {
-        "kind": "azure_sas",
-        "pattern": re.compile(
-            r"(?:[?&;])sig=([A-Za-z0-9%+/]{40,}(?:={0,2}))",
-            re.IGNORECASE,
-        ),
-        "group": 1,
-    },
-    # Azure Storage Account key (88-char base64, embedded in connection strings)
-    {
-        "kind": "azure_storage_key",
-        "pattern": re.compile(
-            r"AccountKey=([A-Za-z0-9+/]{86}==)",
-        ),
-        "group": 1,
-    },
-    # GCP service account private_key_id (40-hex)
-    {
-        "kind": "gcp_service_account",
-        "pattern": re.compile(
-            r'"private_key_id"\s*:\s*"([0-9a-f]{40})"',
-            re.IGNORECASE,
-        ),
-        "group": 1,
-    },
-    # GCP service account private_key (PEM inline with \n escapes)
-    {
-        "kind": "gcp_service_account",
-        "pattern": re.compile(
-            r'"private_key"\s*:\s*"(-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\\n|[\r\n])[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----(?:\\n)?)"',
-        ),
-        "group": 1,
-    },
-
     # ── Session / DB / PEM ───────────────────────────────────────────────
     {
         "kind": "session",
@@ -163,10 +127,7 @@ SPAN_METADATA = {
     "token":            {"score": 0.75, "reason_codes": ["regex_pattern_match"]},
     "oauth_code":       {"score": 0.8,  "reason_codes": ["regex_pattern_match", "url_param_match"]},
     "aws_signature":    {"score": 0.85, "reason_codes": ["regex_pattern_match", "url_param_match"]},
-    "verification_code":  {"score": 0.65, "reason_codes": ["regex_pattern_match", "context_match"]},
-    "azure_sas":          {"score": 0.85, "reason_codes": ["regex_pattern_match"]},
-    "azure_storage_key":  {"score": 0.95, "reason_codes": ["regex_pattern_match"]},
-    "gcp_service_account":{"score": 0.95, "reason_codes": ["regex_pattern_match"]},
+    "verification_code":{"score": 0.65, "reason_codes": ["regex_pattern_match", "context_match"]},
 }
 
 CONTEXTUAL_SECRET_SPECS = {
@@ -240,11 +201,8 @@ _ENTROPY_MIN: dict[str, float] = {
     "db_connection":    2.5,
     "private_key":      0.0,   # PEM block always valid if regex matches
     "oauth_code":       3.0,
-    "aws_signature":      3.5,
-    "verification_code":  0.0,
-    "azure_sas":          3.5,
-    "azure_storage_key":  0.0,  # structure sufficient (86-char base64 + ==)
-    "gcp_service_account":0.0,  # structure sufficient (40-hex / PEM)
+    "aws_signature":    3.5,
+    "verification_code":0.0,
 }
 
 
@@ -272,15 +230,8 @@ def build_secret_span(match: re.Match[str], kind: str, group: int = 0) -> dict[s
     }
 
 
-_MODE_ALIASES: dict[str, str] = {
-    "strict":     "high_precision",
-    "permissive": "high_recall",
-}
-
-
 def normalize_detection_mode(detection_mode: str) -> str:
-    mode = _MODE_ALIASES.get(detection_mode, detection_mode)
-    return mode if mode in MODE_CONFIG else "balanced"
+    return detection_mode if detection_mode in MODE_CONFIG else "balanced"
 
 
 _CN_PII_SPECS = [
@@ -319,43 +270,11 @@ _CN_PII_SPECS = [
         "score": 0.85,
         "pattern": re.compile(r"(?:公积金账号|公积金帐号|公积金账户|公积金帐户)\D{0,40}?(\d{10,14})"),
     },
-    # 中文姓名（关键词锚：2-6个汉字）
-    {
-        "kind": "cn_name",
-        "label": "pii",
-        "score": 0.75,
-        "pattern": re.compile(
-            r"(?:联系人|收件人|姓名|客户|员工|签署人|申请人|经办人|负责人|开户人)\s*[：:]\s*([^\s，,。、\n]{2,6})",
-        ),
-    },
-    # 中文地址（关键词锚：5-80字符）
-    {
-        "kind": "cn_address",
-        "label": "pii",
-        "score": 0.8,
-        "pattern": re.compile(
-            r"(?:地址|住址|收货地址|通讯地址|居住地|注册地址|办公地址)\s*[：:]\s*([^\n]{5,80})",
-        ),
-    },
-    # 银行卡号（关键词锚 + 13-19位数字）
-    {
-        "kind": "bank_card",
-        "label": "pii",
-        "score": 0.85,
-        "pattern": re.compile(
-            r"(?:银行卡号|账号|卡号|借记卡|信用卡号)\s*[：:]\s*(\d[\d\s\-]{11,22}\d)",
-        ),
-    },
-    # 统一社会信用代码（18位固定格式：数字+大写字母，首位1-9或大写字母）
-    {
-        "kind": "cn_uscc",
-        "label": "pii",
-        "score": 0.9,
-        "pattern": re.compile(
-            r"(?:统一社会信用代码|社会信用代码|信用代码)\s*[：:＊*]?\s*([0-9A-HJ-NP-RT-Y]{18})",
-        ),
-    },
 ]
+
+_PERSON_FIELD_PATTERN = re.compile(
+    r"(?:姓名|联系人|收件人|客户姓名|户名)\s*(?:[:：]\s*|\s*[|｜]\s*|\s+)([\u4e00-\u9fff]{2,4})(?=$|[\s|｜，,。；;])"
+)
 
 
 def detect_regex_pii_spans(text: str) -> list[dict[str, object]]:
@@ -372,6 +291,17 @@ def detect_regex_pii_spans(text: str) -> list[dict[str, object]]:
                 "reason_codes": ["regex_pattern_match"],
                 "text": match.group(1),
             })
+    for match in _PERSON_FIELD_PATTERN.finditer(text):
+        spans.append({
+            "start": match.start(1),
+            "end": match.end(1),
+            "label": "private_person",
+            "kind": "cn_person_field",
+            "source": "regex",
+            "score": 0.72,
+            "reason_codes": ["regex_pattern_match", "field_context_match"],
+            "text": match.group(1),
+        })
     return spans
 
 

@@ -1,16 +1,21 @@
 """
-文件文本提取与写回脱敏：PDF（PyMuPDF）和 DOCX（python-docx）。
+File extraction and redaction for PDF / DOCX inputs.
 
-公开 API：
-  extract_text(path, suffix)         → str          纯文本提取
-  redact_pdf_bytes(path, values)     → bytes         返回脱敏后的 PDF
-  redact_docx_bytes(path, values)    → bytes         返回脱敏后的 DOCX
-  UnsupportedFileTypeError           (ValueError)
-
-所有库都是懒加载 —— ImportError 转为 UnsupportedFileTypeError。
+Public API:
+  extract_text(path, suffix)                   -> str
+  extract_pdf_with_metadata(path)              -> PdfExtractionResult
+  redact_pdf_bytes(path, extraction, spans)    -> bytes
+  redact_docx_bytes(path, values)              -> bytes
+  UnsupportedFileTypeError
 """
 
+from __future__ import annotations
+
 import io
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -18,27 +23,439 @@ class UnsupportedFileTypeError(ValueError):
     pass
 
 
-# ── 文本提取 ───────────────────────────────────────────────────────────────────
+PDF_PAGE_SEPARATOR = "\n\f\n"
+PDF_LOW_TEXT_FONT_THRESHOLD = 3.0
+PDF_LINE_Y_TOLERANCE = 4.0
+PDF_TABLE_GAP_THRESHOLD = 60.0
+PDF_WORD_GAP_THRESHOLD = 1.5
+PDF_RECT_GAP_THRESHOLD = 6.0
+PIPE_TOKENS = {"|", "｜"}
 
-def _extract_pdf(path: str) -> str:
+
+@dataclass(slots=True)
+class PdfRectBox:
+    page_index: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass(slots=True)
+class PdfWordBox:
+    text: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass(slots=True)
+class PdfNormalizedPage:
+    text: str
+    char_boxes: list[PdfRectBox | None]
+    provider: str
+
+
+@dataclass(slots=True)
+class PdfExtractionResult:
+    text: str
+    page_count: int
+    used_ocr: bool
+    text_layer_char_count: int
+    ocr_char_count: int
+    quality_flags: list[str]
+    pdf_provider: str
+    page_providers: list[str]
+    char_boxes: list[PdfRectBox | None]
+
+    def rect_boxes_for_span(self, start: int, end: int) -> list[PdfRectBox]:
+        boxes: list[PdfRectBox] = []
+        for box in self.char_boxes[start:end]:
+            if box is not None:
+                boxes.append(box)
+        return boxes
+
+
+def _collect_pdf_quality_flags(page: "fitz.Page", text: str) -> set[str]:
+    flags: set[str] = set()
+    stripped = text.strip()
+
+    if not stripped:
+        flags.add("no_text_layer")
+
+    if page.get_images(full=True):
+        flags.add("image_heavy")
+
+    if stripped:
+        sizes: list[float] = []
+        raw = page.get_text("rawdict")
+        for block in raw.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    size = span.get("size")
+                    if isinstance(size, (int, float)):
+                        sizes.append(float(size))
+        if sizes and min(sizes) <= PDF_LOW_TEXT_FONT_THRESHOLD:
+            flags.add("low_text_density")
+
+    return flags
+
+
+def _extract_pdf_with_ocr(path: str, page_numbers: list[int] | None = None) -> list[object]:
+    from detectors.pdf_ocr import extract_pdf_pages_with_ocr
+
+    return extract_pdf_pages_with_ocr(path, page_numbers=page_numbers)
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _find_pdftotext_binary() -> str | None:
+    return shutil.which("pdftotext")
+
+
+def _load_pdftotext_word_pages(path: str) -> list[list[PdfWordBox]] | None:
+    pdftotext_bin = _find_pdftotext_binary()
+    if not pdftotext_bin:
+        return None
+
+    result = subprocess.run(
+        [pdftotext_bin, "-bbox-layout", path, "-"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        root = ET.fromstring(result.stdout)
+    except ET.ParseError:
+        return None
+
+    pages: list[list[PdfWordBox]] = []
+    for page_elem in root.iter():
+        if _local_name(page_elem.tag) != "page":
+            continue
+        words: list[PdfWordBox] = []
+        for word_elem in page_elem.iter():
+            if _local_name(word_elem.tag) != "word":
+                continue
+            text = "".join(word_elem.itertext())
+            if not text:
+                continue
+            try:
+                words.append(
+                    PdfWordBox(
+                        text=text,
+                        x0=float(word_elem.attrib["xMin"]),
+                        y0=float(word_elem.attrib["yMin"]),
+                        x1=float(word_elem.attrib["xMax"]),
+                        y1=float(word_elem.attrib["yMax"]),
+                    )
+                )
+            except (KeyError, ValueError):
+                continue
+        pages.append(words)
+    return pages
+
+
+def _append_literal(parts: list[str], char_boxes: list[PdfRectBox | None], text: str) -> None:
+    if not text:
+        return
+    parts.append(text)
+    char_boxes.extend([None] * len(text))
+
+
+def _distribute_word_boxes(word: PdfWordBox, page_index: int) -> list[PdfRectBox | None]:
+    if not word.text:
+        return []
+    width = max(word.x1 - word.x0, 0.001)
+    boxes: list[PdfRectBox | None] = []
+    length = len(word.text)
+    for index, char in enumerate(word.text):
+        if char.isspace():
+            boxes.append(None)
+            continue
+        char_x0 = word.x0 + (width * index / length)
+        char_x1 = word.x0 + (width * (index + 1) / length)
+        boxes.append(PdfRectBox(page_index, char_x0, word.y0, char_x1, word.y1))
+    return boxes
+
+
+def _append_positioned_text(
+    parts: list[str],
+    char_boxes: list[PdfRectBox | None],
+    text: str,
+    boxes: list[PdfRectBox | None],
+) -> None:
+    parts.append(text)
+    if len(boxes) == len(text):
+        char_boxes.extend(boxes)
+        return
+    char_boxes.extend([None] * len(text))
+
+
+def _group_words_into_lines(words: list[PdfWordBox]) -> list[list[PdfWordBox]]:
+    lines: list[dict[str, object]] = []
+    for word in sorted(words, key=lambda item: (item.y0, item.x0)):
+        y_mid = (word.y0 + word.y1) / 2
+        target_line: dict[str, object] | None = None
+        for line in lines:
+            if abs(float(line["y_mid"]) - y_mid) <= PDF_LINE_Y_TOLERANCE:
+                target_line = line
+                break
+        if target_line is None:
+            target_line = {"y_mid": y_mid, "words": []}
+            lines.append(target_line)
+        words_list = target_line["words"]
+        assert isinstance(words_list, list)
+        words_list.append(word)
+
+    normalized_lines: list[list[PdfWordBox]] = []
+    for line in sorted(lines, key=lambda item: float(item["y_mid"])):
+        words_list = line["words"]
+        assert isinstance(words_list, list)
+        normalized_lines.append(sorted(words_list, key=lambda item: item.x0))
+    return normalized_lines
+
+
+def _separator_between_words(previous: PdfWordBox, current: PdfWordBox) -> str:
+    gap = current.x0 - previous.x1
+    if previous.text in PIPE_TOKENS or current.text in PIPE_TOKENS:
+        return " "
+    if gap >= PDF_TABLE_GAP_THRESHOLD and len(previous.text) <= 24 and len(current.text) <= 48:
+        return " | "
+    if gap >= PDF_WORD_GAP_THRESHOLD:
+        return " "
+    return ""
+
+
+def _normalize_pdftotext_page(words: list[PdfWordBox], page_index: int) -> PdfNormalizedPage:
+    if not words:
+        return PdfNormalizedPage(text="", char_boxes=[], provider="pdftotext")
+
+    parts: list[str] = []
+    char_boxes: list[PdfRectBox | None] = []
+    lines = _group_words_into_lines(words)
+
+    for line_index, line_words in enumerate(lines):
+        for word_index, word in enumerate(line_words):
+            if word_index > 0:
+                _append_literal(parts, char_boxes, _separator_between_words(line_words[word_index - 1], word))
+            _append_positioned_text(parts, char_boxes, word.text, _distribute_word_boxes(word, page_index))
+        if line_index < len(lines) - 1:
+            _append_literal(parts, char_boxes, "\n")
+
+    return PdfNormalizedPage(text="".join(parts), char_boxes=char_boxes, provider="pdftotext")
+
+
+def _normalize_pymupdf_page(page: "fitz.Page", page_index: int) -> PdfNormalizedPage:
+    raw = page.get_text("rawdict")
+    parts: list[str] = []
+    char_boxes: list[PdfRectBox | None] = []
+
+    for block in raw.get("blocks", []):
+        for line in block.get("lines", []):
+            line_has_chars = False
+            for span in line.get("spans", []):
+                for char in span.get("chars", []):
+                    value = char.get("c", "")
+                    if not value:
+                        continue
+                    bbox = char.get("bbox")
+                    parts.append(value)
+                    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                        char_boxes.append(
+                            PdfRectBox(
+                                page_index,
+                                float(bbox[0]),
+                                float(bbox[1]),
+                                float(bbox[2]),
+                                float(bbox[3]),
+                            )
+                        )
+                    else:
+                        char_boxes.append(None)
+                    line_has_chars = True
+            if line_has_chars:
+                _append_literal(parts, char_boxes, "\n")
+
+    if parts and parts[-1] == "\n":
+        parts.pop()
+        char_boxes.pop()
+
+    return PdfNormalizedPage(text="".join(parts), char_boxes=char_boxes, provider="pymupdf")
+
+
+def _normalize_simple_ocr_text(text: str) -> PdfNormalizedPage:
+    return PdfNormalizedPage(text=text.strip(), char_boxes=[None] * len(text.strip()), provider="vision_ocr")
+
+
+def _bbox_from_ocr_payload(
+    bbox: dict[str, object],
+    page_index: int,
+    page_width: float,
+    page_height: float,
+) -> PdfRectBox | None:
+    try:
+        x0 = float(bbox["x0"]) * page_width
+        x1 = float(bbox["x1"]) * page_width
+        y0 = (1.0 - float(bbox["y1"])) * page_height
+        y1 = (1.0 - float(bbox["y0"])) * page_height
+    except (KeyError, TypeError, ValueError):
+        return None
+    return PdfRectBox(page_index, x0, y0, x1, y1)
+
+
+def _normalize_vision_ocr_page(payload: object, page_index: int, page_width: float, page_height: float) -> PdfNormalizedPage:
+    if isinstance(payload, str):
+        return _normalize_simple_ocr_text(payload)
+
+    if not isinstance(payload, dict):
+        return PdfNormalizedPage(text="", char_boxes=[], provider="vision_ocr")
+
+    raw_lines = payload.get("lines", [])
+    if not isinstance(raw_lines, list):
+        return PdfNormalizedPage(text="", char_boxes=[], provider="vision_ocr")
+
+    def _line_sort_key(line: dict[str, object]) -> tuple[float, float]:
+        bbox = line.get("bbox", {})
+        if not isinstance(bbox, dict):
+            return (1.0, 0.0)
+        try:
+            top = 1.0 - float(bbox["y1"])
+            left = float(bbox["x0"])
+        except (KeyError, TypeError, ValueError):
+            return (1.0, 0.0)
+        return (top, left)
+
+    parts: list[str] = []
+    char_boxes: list[PdfRectBox | None] = []
+    ordered_lines = sorted((line for line in raw_lines if isinstance(line, dict)), key=_line_sort_key)
+    for line_index, line in enumerate(ordered_lines):
+        raw_chars = line.get("chars", [])
+        if not isinstance(raw_chars, list):
+            raw_chars = []
+        line_text_parts: list[str] = []
+        line_char_boxes: list[PdfRectBox | None] = []
+        for raw_char in raw_chars:
+            if not isinstance(raw_char, dict):
+                continue
+            char_text = str(raw_char.get("text", ""))
+            if not char_text:
+                continue
+            for fragment in char_text:
+                bbox = raw_char.get("bbox")
+                rect = _bbox_from_ocr_payload(bbox, page_index, page_width, page_height) if isinstance(bbox, dict) else None
+                line_text_parts.append(fragment)
+                line_char_boxes.append(None if fragment.isspace() else rect)
+
+        line_text = "".join(line_text_parts).strip()
+        if not line_text:
+            continue
+
+        leading_trim = len("".join(line_text_parts)) - len("".join(line_text_parts).lstrip())
+        trailing_trim = len("".join(line_text_parts)) - len("".join(line_text_parts).rstrip())
+        if leading_trim:
+            line_char_boxes = line_char_boxes[leading_trim:]
+        if trailing_trim:
+            line_char_boxes = line_char_boxes[: len(line_char_boxes) - trailing_trim]
+
+        _append_positioned_text(parts, char_boxes, line_text, line_char_boxes)
+        if line_index < len(ordered_lines) - 1:
+            _append_literal(parts, char_boxes, "\n")
+
+    return PdfNormalizedPage(text="".join(parts), char_boxes=char_boxes, provider="vision_ocr")
+
+
+def extract_pdf_with_metadata(path: str, skip_ocr: bool = False) -> PdfExtractionResult:
     try:
         import fitz
     except ImportError as exc:
         raise UnsupportedFileTypeError("PyMuPDF not installed; cannot extract PDF") from exc
 
     doc = fitz.open(path)
-    pages: list[str] = []
-    for page in doc:
-        pages.append(page.get_text())
-    doc.close()
-    return "\n\f\n".join(pages)
+    try:
+        pdftotext_pages = _load_pdftotext_word_pages(path) or []
+        normalized_pages: list[PdfNormalizedPage] = []
+        page_flags: list[set[str]] = []
+        ocr_page_numbers: list[int] = []
+        text_layer_char_count = 0
+        ocr_char_count = 0
+
+        for page_index, page in enumerate(doc):
+            raw_text = page.get_text()
+            flags = _collect_pdf_quality_flags(page, raw_text)
+            page_flags.append(flags)
+
+            if page_index < len(pdftotext_pages) and pdftotext_pages[page_index]:
+                normalized_page = _normalize_pdftotext_page(pdftotext_pages[page_index], page_index)
+                if not normalized_page.text.strip() and raw_text.strip():
+                    normalized_page = _normalize_pymupdf_page(page, page_index)
+            elif raw_text.strip():
+                normalized_page = _normalize_pymupdf_page(page, page_index)
+            else:
+                normalized_page = PdfNormalizedPage(text="", char_boxes=[], provider="pymupdf")
+
+            normalized_pages.append(normalized_page)
+            text_layer_char_count += len(normalized_page.text)
+
+            if "no_text_layer" in flags or "low_text_density" in flags:
+                ocr_page_numbers.append(page_index)
+
+        if ocr_page_numbers and not skip_ocr:
+            try:
+                ocr_pages = _extract_pdf_with_ocr(path, ocr_page_numbers)
+            except (ImportError, OSError, RuntimeError, UnsupportedFileTypeError):
+                ocr_pages = []
+
+            for page_index, ocr_payload in zip(ocr_page_numbers, ocr_pages):
+                page = doc.load_page(page_index)
+                normalized_page = _normalize_vision_ocr_page(
+                    ocr_payload,
+                    page_index,
+                    float(page.rect.width),
+                    float(page.rect.height),
+                )
+                if not normalized_page.text.strip():
+                    continue
+                normalized_pages[page_index] = normalized_page
+                ocr_char_count += len(normalized_page.text)
+
+        page_texts = [page.text for page in normalized_pages]
+        page_providers = [page.provider for page in normalized_pages]
+        char_boxes: list[PdfRectBox | None] = []
+        for page_index, page in enumerate(normalized_pages):
+            char_boxes.extend(page.char_boxes)
+            if page_index < len(normalized_pages) - 1:
+                char_boxes.extend([None] * len(PDF_PAGE_SEPARATOR))
+
+        pdf_provider = page_providers[0] if page_providers and len(set(page_providers)) == 1 else "hybrid"
+        quality_flags = sorted({flag for flags in page_flags for flag in flags})
+        used_ocr = any(provider == "vision_ocr" for provider in page_providers)
+        return PdfExtractionResult(
+            text=PDF_PAGE_SEPARATOR.join(page_texts),
+            page_count=doc.page_count,
+            used_ocr=used_ocr,
+            text_layer_char_count=text_layer_char_count,
+            ocr_char_count=ocr_char_count,
+            quality_flags=quality_flags,
+            pdf_provider=pdf_provider,
+            page_providers=page_providers,
+            char_boxes=char_boxes,
+        )
+    finally:
+        doc.close()
+
+
+def _extract_pdf(path: str) -> str:
+    return extract_pdf_with_metadata(path).text
 
 
 def _extract_docx(path: str) -> str:
-    """
-    只遍历 body 顶层元素，避免 doc.paragraphs 把表格内的段落计两次。
-    遇到顶层 <w:p> 直接读；遇到顶层 <w:tbl> 递归读单元格段落。
-    """
     try:
         from docx import Document
         from docx.table import Table
@@ -53,18 +470,18 @@ def _extract_docx(path: str) -> str:
         for row in tbl.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    t = para.text.strip()
-                    if t:
-                        parts.append(t)
+                    text = para.text.strip()
+                    if text:
+                        parts.append(text)
                 for nested in cell.tables:
                     _collect_table(nested)
 
     for child in doc.element.body:
         local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
         if local == "p":
-            t = Paragraph(child, doc).text.strip()
-            if t:
-                parts.append(t)
+            text = Paragraph(child, doc).text.strip()
+            if text:
+                parts.append(text)
         elif local == "tbl":
             _collect_table(Table(child, doc))
 
@@ -72,66 +489,9 @@ def _extract_docx(path: str) -> str:
 
 
 _EXTRACTORS = {
-    ".pdf":  _extract_pdf,
+    ".pdf": _extract_pdf,
     ".docx": _extract_docx,
 }
-
-# 分块的最小字符数（短行合并到下一块，避免 OPF 在单词片段上产生误判）
-_CHUNK_MIN_CHARS = 40
-# 分块最大字符数（超过此长度强制切分，防止 OPF 截断）
-_CHUNK_MAX_CHARS = 1200
-# sliding window 上下文行数（chunk 前后各取 N 行拼入 OPF 输入，但 span 坐标仍基于 chunk）
-_CONTEXT_LINES = 2
-
-
-def extract_chunks(full_text: str) -> list[tuple[str, int]]:
-    """
-    将全文按段落/行拆分为 (chunk_text, start_offset) 列表。
-
-    - 行太短时向后合并（< _CHUNK_MIN_CHARS）
-    - 行太长时强制按 _CHUNK_MAX_CHARS 切分
-    - start_offset 是 chunk_text 在 full_text 中的起始字符偏移
-
-    调用方用 start_offset 把 OPF 返回的 span.start/end 还原到全文坐标。
-    """
-    lines: list[tuple[str, int]] = []
-    pos = 0
-    for raw_line in full_text.splitlines(keepends=True):
-        lines.append((raw_line, pos))
-        pos += len(raw_line)
-
-    chunks: list[tuple[str, int]] = []
-    buf = ""
-    buf_start = 0
-
-    def _flush(text: str, start: int) -> None:
-        text = text.rstrip("\n")
-        if text.strip():
-            # 超长则按 _CHUNK_MAX_CHARS 切分
-            while len(text) > _CHUNK_MAX_CHARS:
-                chunks.append((text[:_CHUNK_MAX_CHARS], start))
-                text = text[_CHUNK_MAX_CHARS:]
-                start += _CHUNK_MAX_CHARS
-            if text.strip():
-                chunks.append((text, start))
-
-    for line_text, line_start in lines:
-        stripped = line_text.strip()
-        if not stripped:
-            _flush(buf, buf_start)
-            buf = ""
-            buf_start = line_start + len(line_text)
-            continue
-        if not buf:
-            buf_start = line_start
-        buf += line_text
-        if len(buf.rstrip()) >= _CHUNK_MIN_CHARS:
-            _flush(buf, buf_start)
-            buf = ""
-            buf_start = line_start + len(line_text)
-
-    _flush(buf, buf_start)
-    return chunks
 
 
 def extract_text(path: str, suffix: str | None = None) -> str:
@@ -144,98 +504,110 @@ def extract_text(path: str, suffix: str | None = None) -> str:
     return extractor(path)
 
 
-# ── 写回脱敏 ───────────────────────────────────────────────────────────────────
+def _boxes_on_same_line(left: PdfRectBox, right: PdfRectBox) -> bool:
+    if left.page_index != right.page_index:
+        return False
+    overlap = max(0.0, min(left.y1, right.y1) - max(left.y0, right.y0))
+    min_height = min(left.y1 - left.y0, right.y1 - right.y0)
+    return min_height > 0 and overlap / min_height >= 0.5
 
-def _pdf_page_chars(page: "fitz.Page") -> list[tuple[str, "fitz.Rect"]]:
-    """返回页面所有字符及其 bbox（rawdict），包含换行符占位以对齐 get_text() 输出。"""
-    import fitz
-    chars: list[tuple[str, fitz.Rect]] = []
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                for ch in span.get("chars", []):
-                    c = ch.get("c", "")
-                    if c:
-                        chars.append((c, fitz.Rect(ch["bbox"])))
-            # get_text() 每行末尾加换行，rawdict 对齐需同步
-            chars.append(("\n", fitz.Rect(0, 0, 0, 0)))
-    return chars
+
+def _merge_rect_boxes(boxes: list[PdfRectBox]) -> list[PdfRectBox]:
+    if not boxes:
+        return []
+    ordered = sorted(boxes, key=lambda box: (box.page_index, box.y0, box.x0, box.x1))
+    merged: list[PdfRectBox] = [ordered[0]]
+    for box in ordered[1:]:
+        previous = merged[-1]
+        if _boxes_on_same_line(previous, box) and box.x0 - previous.x1 <= PDF_RECT_GAP_THRESHOLD:
+            merged[-1] = PdfRectBox(
+                previous.page_index,
+                min(previous.x0, box.x0),
+                min(previous.y0, box.y0),
+                max(previous.x1, box.x1),
+                max(previous.y1, box.y1),
+            )
+            continue
+        merged.append(box)
+    return merged
 
 
 def _find_value_rects(page: "fitz.Page", value: str) -> list["fitz.Rect"]:
-    """
-    先用 search_for 快速定位；失败时用字符级 bbox 回退（覆盖中文 CJK 字体场景）。
-    两者都用 page.get_text() 同源文本，确保 find() 偏移量对齐。
-    """
     import fitz
 
     rects = page.search_for(value)
     if rects:
         return rects
-
-    # 回退：从 rawdict 取字符 bbox，用 get_text() 同源文本定位偏移
-    chars = _pdf_page_chars(page)
-    if not chars:
-        return []
-
-    # 用与提取时相同的 get_text() 文本做 find，确保偏移一致
-    page_text = page.get_text()
-    chars_filtered = [(c, r) for c, r in chars if c != "\n"]
-
-    # 在 page_text 里找到所有匹配，映射到 chars_filtered（跳过换行符）
-    # 重建不含换行的索引映射
-    no_newline_text = page_text.replace("\n", "")
-    value_no_newline = value.replace("\n", "")
-
-    found: list[fitz.Rect] = []
-    start = 0
-    while True:
-        idx = no_newline_text.find(value_no_newline, start)
-        if idx == -1:
-            break
-        span_rects = [r for _, r in chars_filtered[idx: idx + len(value_no_newline)]
-                      if r.width > 0 or r.height > 0]
-        if span_rects:
-            combined = span_rects[0]
-            for r in span_rects[1:]:
-                combined |= r
-            found.append(combined)
-        start = idx + 1
-    return found
+    return []
 
 
-def redact_pdf_bytes(path: str, secret_values: list[str]) -> bytes:
-    """
-    用 PyMuPDF redaction API 物理删除敏感文字并覆盖黑块，返回新 PDF bytes。
-    对 search_for 无法定位的 CJK 字体文字，回退到字符级 bbox 定位。
-    """
+def redact_pdf_bytes(
+    path: str,
+    extraction: PdfExtractionResult | list[str],
+    spans: list[dict[str, object]] | None = None,
+) -> bytes:
     try:
         import fitz
     except ImportError as exc:
         raise UnsupportedFileTypeError("PyMuPDF not installed; cannot redact PDF") from exc
 
+    if isinstance(extraction, PdfExtractionResult):
+        active_spans = spans or []
+        page_rects: dict[int, list[PdfRectBox]] = {}
+        # Spans with no char_box coordinates (e.g. OCR pages extracted with skip_ocr=True)
+        fallback_values: set[str] = set()
+        for span in active_spans:
+            rects = _merge_rect_boxes(
+                extraction.rect_boxes_for_span(int(span["start"]), int(span["end"]))
+            )
+            if rects:
+                for rect in rects:
+                    page_rects.setdefault(rect.page_index, []).append(rect)
+            else:
+                span_text = str(span.get("text", "")).strip()
+                if span_text:
+                    fallback_values.add(span_text)
+
+        if not page_rects and not fallback_values:
+            return Path(path).read_bytes()
+
+        doc = fitz.open(path)
+        try:
+            for page_index, rects in page_rects.items():
+                page = doc.load_page(page_index)
+                for rect in rects:
+                    page.add_redact_annot(
+                        fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1),
+                        fill=(0, 0, 0),
+                    )
+                page.apply_redactions()
+            # Fallback: use text search for spans that had no coordinate data
+            if fallback_values:
+                for page in doc:
+                    for value in fallback_values:
+                        for rect in page.search_for(value):
+                            page.add_redact_annot(rect, fill=(0, 0, 0))
+                    page.apply_redactions()
+            return doc.tobytes(garbage=4, deflate=True)
+        finally:
+            doc.close()
+
+    secret_values = extraction
     doc = fitz.open(path)
-    for page in doc:
-        for value in secret_values:
-            if not value:
-                continue
-            for rect in _find_value_rects(page, value):
-                page.add_redact_annot(rect, fill=(0, 0, 0))
-        page.apply_redactions()
-    out = doc.tobytes(garbage=4, deflate=True)
-    doc.close()
-    return out
+    try:
+        for page in doc:
+            for value in secret_values:
+                if not value:
+                    continue
+                for rect in _find_value_rects(page, value):
+                    page.add_redact_annot(rect, fill=(0, 0, 0))
+            page.apply_redactions()
+        return doc.tobytes(garbage=4, deflate=True)
+    finally:
+        doc.close()
 
 
 def redact_docx_bytes(path: str, secret_values: list[str]) -> bytes:
-    """
-    在段落/表格中替换密钥值，返回新 DOCX bytes。
-    两步法：
-      1. per-run 替换（保留各 run 的字体/加粗等格式）
-      2. 若密钥横跨多个 run（Word 自动分拆），回退到段落级替换
-         （第一个 run 承接所有文字，其余 run 清空 —— 丢失跨 run 的局部格式，
-          但确保密钥不会漏过）
-    """
     try:
         from docx import Document
         from docx.table import Table
@@ -244,17 +616,15 @@ def redact_docx_bytes(path: str, secret_values: list[str]) -> bytes:
         raise UnsupportedFileTypeError("python-docx not installed; cannot redact DOCX") from exc
 
     doc = Document(path)
-    values = [v for v in secret_values if v]
+    values = [value for value in secret_values if value]
 
     def _redact_para(para: "Paragraph") -> None:
-        for v in values:
-            # pass 1: per-run（保格式）
+        for value in values:
             for run in para.runs:
-                if v in run.text:
-                    run.text = run.text.replace(v, "<SECRET>")
-            # pass 2: 跨 run 兜底
-            if v in para.text:
-                replaced = para.text.replace(v, "<SECRET>")
+                if value in run.text:
+                    run.text = run.text.replace(value, "<SECRET>")
+            if value in para.text:
+                replaced = para.text.replace(value, "<SECRET>")
                 runs = para.runs
                 if runs:
                     runs[0].text = replaced
@@ -276,6 +646,6 @@ def redact_docx_bytes(path: str, secret_values: list[str]) -> bytes:
         elif local == "tbl":
             _redact_table(Table(child, doc))
 
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()

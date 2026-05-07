@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Privacy Filter Local</title>
+    <title>Redaction Gateway</title>
     <!-- pdf.js for PDF in-browser rendering -->
     <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs" type="module" id="pdfjs-script"></script>
     <!-- JSZip (required by docx-preview) + docx-preview for DOCX in-browser rendering -->
@@ -581,7 +581,6 @@
       .debug-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .debug-card { display: grid; gap: 8px; }
       .debug-meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-      .opf-warning-banner { padding: 8px 12px; margin-bottom: 10px; border-radius: 4px; font-size: 12px; background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.4); color: #ca8a04; }
       .empty-state { display: block; }
 
       /* ── PDF / DOCX rendering shared utilities ──────────────────────── */
@@ -651,7 +650,7 @@
   <body>
     <main class="app-shell">
       <header class="topline">
-        <span>Privacy Filter Local</span>
+        <span>Redaction Gateway</span>
         <span>127.0.0.1 / local-only / review required</span>
       </header>
 
@@ -873,9 +872,6 @@
 
             <section id="runtimePanel" class="inspector-panel" hidden role="tabpanel">
               <div class="section-label">Runtime</div>
-              <div id="opfWarningBanner" hidden class="opf-warning-banner" role="alert">
-                ⚠ OPF 语义模型不可用 — 当前仅基础正则检测，邮箱、手机、姓名、地址可能漏检
-              </div>
               <div class="mapping-label">Debug Timing And Cache</div>
               <div id="debugPanel" class="debug-grid">
                 <section class="debug-card">
@@ -1399,7 +1395,7 @@
         scheduleFileRefresh._timer = setTimeout(async () => {
           scheduleFileRefresh._timer = null;
           try {
-            await downloadAndPreviewFile();
+            await downloadAndPreviewFile({ skipOrigPane: true });
           } catch (e) {
             setStatus(`Preview refresh failed: ${getErrorMessage(e)}`, true);
           }
@@ -1571,12 +1567,6 @@
       }
 
       /* ── Review state apply ─────────────────────────────────────────── */
-      function renderOpfStatus(opfAvailable) {
-        const banner = document.getElementById("opfWarningBanner");
-        if (!banner) return;
-        banner.hidden = opfAvailable !== false;
-      }
-
       function applyReviewResponse(data, reviewText, sourceDetails = { kind: "text" }) {
         S.copyText = data.redacted_text || "";
         S.text = reviewText;
@@ -1597,12 +1587,11 @@
         renderStats(reviewText, data.spans);
         renderCatSidebar(data.spans);
         renderRequestTiming(data.timings);
-        renderOpfStatus(data.opf_available);
         refreshDebugStats(data.timings);
         updateReviewSourceMeta(sourceDetails);
-        // Mode-aware panel visibility
-        const isFile = sourceDetails.kind === "file";
-        replacementMapping.hidden = isFile;
+        // Mode-aware panel visibility — in file mode, show both panes:
+        // text highlight for span-level toggles + file compare once blobs load
+        replacementMapping.hidden = false;
         fileComparePanel.hidden = true; // downloadAndPreviewFile() will show it once blobs are ready
         updateDownloadBtnHint();
       }
@@ -1659,8 +1648,9 @@
         await downloadAndPreviewFile();
       }
 
-      /* ── Download redacted file (active_categories controls which spans are redacted) ── */
-      async function downloadAndPreviewFile() {
+      /* ── Download redacted file ─────────────────────────────────────── */
+      // skipOrigPane=true skips reloading the unchanged original pane (used on toggle refresh)
+      async function downloadAndPreviewFile({ skipOrigPane = false } = {}) {
         const fd = new FormData();
         fd.append("file", new Blob([S.fileBytes.slice(0)], { type: S.fileMimeType }), S.fileName);
         fd.append("source", "manual_ui");
@@ -1668,6 +1658,12 @@
         fd.append("mode", "warn");
         fd.append("detection_mode", detectionMode.value);
         fd.append("active_categories", JSON.stringify([...S.activeCats]));
+        const activeSpansPayload = S.spans
+          .filter((_, i) => S.activeSpans.has(i))
+          .map(sp => ({ start: sp.start, end: sp.end, label: sp.label }));
+        fd.append("active_spans", JSON.stringify(activeSpansPayload));
+        // Pass pre-detected spans so the server can skip re-detection
+        if (S.spans.length) fd.append("precomputed_spans", JSON.stringify(S.spans));
 
         const downloadResponse = await fetch(`${API_BASE}/redact-file/download`, { method: "POST", body: fd });
         if (!downloadResponse.ok) throw new Error(await readErrorMessage(downloadResponse));
@@ -1678,12 +1674,16 @@
         S.redactedBlob = redactedBlob;
         S.redactedFilename = match ? match[1] : `${S.fileName.replace(/\.[^.]+$/, "")}_redacted.${S.fileSuffix}`;
 
-        // Show compare panel and render both panes in parallel
         fileComparePanel.hidden = false;
-        await Promise.all([
-          loadPanePreview(S.fileBytes.slice(0), S.fileType, ORIG_PANE),
-          (async () => { await loadPanePreview(await S.redactedBlob.arrayBuffer(), S.fileType, REDACTED_PANE); })(),
-        ]);
+        const redactedBytes = await S.redactedBlob.arrayBuffer();
+        if (skipOrigPane) {
+          await loadPanePreview(redactedBytes, S.fileType, REDACTED_PANE);
+        } else {
+          await Promise.all([
+            loadPanePreview(S.fileBytes.slice(0), S.fileType, ORIG_PANE),
+            loadPanePreview(redactedBytes, S.fileType, REDACTED_PANE),
+          ]);
+        }
       }
 
       /* ── Download (reuses cached blob) ─────────────────────────────── */

@@ -1,6 +1,6 @@
-# Privacy Filter Local
+# Redaction Gateway
 
-本地隐私过滤网关。在文本发送到 AI 模型或写入 Linear 之前，检测并脱敏 API 密钥、密码和个人信息（PII）。
+本地脱敏网关。在文本发送到 AI 模型、聊天界面或文件外发之前，检测并脱敏 API 密钥、密码和个人信息（PII）。
 
 ## 快速开始
 
@@ -11,6 +11,11 @@ pip install -r requirements.txt
 python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 ```
 
+说明：
+- Python 3.13+ / 3.14 可以完成基础安装并运行服务
+- 文本型 PDF 走 `pdftotext -bbox-layout` + PyMuPDF 的本地抽取链路
+- 扫描件 / 图像型 PDF 会尝试调用仓库内置的 macOS Vision helper；当前主服务本身不再依赖额外 Python OCR wheel
+
 访问 `http://127.0.0.1:7861/` 打开 UI。
 
 ## 运行测试
@@ -19,7 +24,7 @@ python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 ./.venv/bin/python -m pytest -v
 ```
 
-162 个测试，覆盖网关路由、策略层、正则检测、结构解析、OPF 运行时、文件脱敏、PDF 分块提取。
+133 个测试，覆盖网关路由、策略层、正则检测、结构解析、OPF 运行时、文件脱敏。
 
 ## API 路由
 
@@ -100,7 +105,7 @@ python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 
 ## 文件脱敏
 
-- **PDF**：PyMuPDF redaction API，在原始坐标上画黑块覆盖
+- **PDF**：优先使用 `pdftotext -bbox-layout` 抽取文本和坐标；扫描件/图像型 PDF 会尝试走本地 Vision OCR。下载时优先使用抽取阶段得到的字符坐标做定点黑块覆盖；若 OCR 坐标不可用，则不会猜测 bbox
 - **DOCX**：在 run 级别替换匹配文字为 `<REDACTED>`
 
 ## 环境变量
@@ -113,10 +118,13 @@ python3 -m uvicorn app:app --host 127.0.0.1 --port 7861
 
 ## 已知局限
 
-- **OPF 不可用**（已改善）：OPF 失效时，中文姓名、地址、银行卡号、统一社会信用代码由关键词锚正则兜底检测；邮箱、手机由原有正则覆盖。OPF 降级状态通过 `opf_available` 字段暴露，UI Inspector > Runtime 面板显示警告条。
-- **`detection_mode` strict/permissive**（已修复）：`strict` 映射 `high_precision`（score 阈值 0.8，跳过低置信度 token），`permissive` 映射 `high_recall`（score 阈值 0.6，放宽弱上下文匹配），三档完全差异化。
-- **YAML 块标量**（已修复）：`structured_parser.py` 新增状态机，识别 `key: |` / `key: >` 并累积缩进行，跨行 PEM / token 现可被 `parser_rule` 层检测。
-- **Azure SAS token / Google Cloud 服务账号 JSON**（已修复）：新增 `azure_sas`（sig= 参数）、`azure_storage_key`（AccountKey=）、`gcp_service_account`（private_key_id 和 private_key 字段）四条正则，score 0.85–0.95。
+- **OPF 不可用**：邮箱、手机、姓名、地址检测失效，无正则兜底
+- **扫描件 OCR 受宿主环境限制**：文本型 PDF 不受影响；扫描件 PDF 依赖本地 Vision helper 是否可在当前 macOS/沙箱环境中执行成功
+- **OCR PDF 下载保真有限**：OCR 提升的是检测与 review 文本质量；若 PDF 本身没有可靠文本层，本阶段下载文件不会猜测 bbox 去画黑块
+- **OCR 速度慢于文本层**：扫描件/图像型 PDF 会比普通可选中文本 PDF 更慢
+- **`detection_mode` strict/permissive**：均映射到 `balanced`，三档未完全接入
+- **YAML 块标量**（`|` / `>` 多行）：单行解析器无法跨行
+- **Azure SAS token / Google Cloud 服务账号 JSON**：无覆盖
 - `adapters/` 目录（`linear.py`、`symphony.py`）为预留存根，路由尚未接入
 
 ## 设计约束

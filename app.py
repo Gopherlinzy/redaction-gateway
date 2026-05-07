@@ -22,7 +22,7 @@ from detectors.secret_scores import filter_candidates_for_mode
 from detectors.regex_backstop import detect_regex_secret_spans, detect_regex_pii_spans
 from detectors.file_extractor import (
     extract_text,
-    extract_chunks,
+    extract_pdf_with_metadata,
     redact_pdf_bytes,
     redact_docx_bytes,
     UnsupportedFileTypeError,
@@ -285,9 +285,16 @@ def prewarm_runtime() -> bool:
     return True
 
 
+async def _prewarm_background() -> None:
+    """Run OPF prewarm in a background task so startup doesn't block /ready or /stats."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_opf_executor, prewarm_runtime)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    prewarm_runtime()
+    if _should_prewarm_runtime():
+        asyncio.create_task(_prewarm_background())
     yield
 
 
@@ -353,70 +360,19 @@ def merge_spans(spans: list[dict[str, object]]) -> list[dict[str, object]]:
     return merged
 
 
-async def _detect_opf_async(text: str) -> tuple[list[dict[str, object]], float, bool]:
-    """Run OPF in thread pool — non-blocking. Returns (spans, elapsed_seconds, opf_available)."""
-    if len(text) < OPF_SKIP_THRESHOLD:
-        return [], 0.0, True
+async def _detect_opf_async(text: str, force: bool = False) -> tuple[list[dict[str, object]], float]:
+    """Run OPF in thread pool — non-blocking. Returns (spans, elapsed_seconds)."""
+    if not force and len(text) < OPF_SKIP_THRESHOLD:
+        return [], 0.0
     loop = asyncio.get_event_loop()
     start = perf_counter()
     try:
         spans = await loop.run_in_executor(_opf_executor, detect_with_runtime, text)
         _mark_runtime_ready("request")
-        return spans, perf_counter() - start, True
+        return spans, perf_counter() - start
     except Exception as exc:
         logger.warning("OPF runtime unavailable, falling back to regex-only detection: %s", exc)
-        return [], perf_counter() - start, False
-
-
-def _run_opf_on_chunk(chunk_text: str, offset: int) -> list[dict[str, object]]:
-    """Run OPF on one chunk and shift span offsets to full-text coordinates."""
-    try:
-        spans = detect_with_runtime(chunk_text)
-    except Exception as exc:
-        logger.warning("OPF chunk detection failed (offset=%d): %s", offset, exc)
-        return []
-    shifted: list[dict[str, object]] = []
-    for sp in spans:
-        sp = dict(sp)
-        sp["start"] = int(sp["start"]) + offset
-        sp["end"] = int(sp["end"]) + offset
-        # re-materialize text from shifted coordinates is handled by merge_spans caller
-        shifted.append(sp)
-    return shifted
-
-
-async def _detect_opf_chunked(
-    full_text: str,
-    chunks: list[tuple[str, int]],
-) -> tuple[list[dict[str, object]], float, bool]:
-    """
-    Run OPF per paragraph chunk and merge results into full-text offsets.
-    Falls back to whole-text OPF when chunks are unavailable.
-    Returns (spans, elapsed_seconds, opf_available).
-    """
-    if not chunks:
-        return await _detect_opf_async(full_text)
-
-    loop = asyncio.get_event_loop()
-    start = perf_counter()
-    all_spans: list[dict[str, object]] = []
-    opf_available = True
-
-    for chunk_text, offset in chunks:
-        if len(chunk_text) < OPF_SKIP_THRESHOLD:
-            continue
-        try:
-            chunk_spans = await loop.run_in_executor(
-                _opf_executor, _run_opf_on_chunk, chunk_text, offset
-            )
-            all_spans.extend(chunk_spans)
-            _mark_runtime_ready("request")
-        except Exception as exc:
-            logger.warning("OPF chunked detection unavailable: %s", exc)
-            opf_available = False
-            break
-
-    return all_spans, perf_counter() - start, opf_available
+        return [], perf_counter() - start
 
 
 def collect_spans(
@@ -542,7 +498,7 @@ def index() -> str:
 
 @app.post("/scan")
 async def scan(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/scan",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
@@ -551,25 +507,23 @@ async def scan(request: ScanRequest) -> dict[str, object]:
         "risk_level": decision["risk_level"],
         "summary": build_summary(spans),
         "recommended_action": decision["decision"],
-        "opf_available": opf_available,
         "timings": get_last_request_timing(),
     }
 
 
 @app.post("/decide")
 async def decide(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/decide",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
     decision["timings"] = get_last_request_timing()
-    decision["opf_available"] = opf_available
     return decision
 
 
 @app.post("/redact")
 async def redact(request: ScanRequest) -> dict[str, object]:
-    opf_spans, opf_seconds, opf_available = await _detect_opf_async(request.text)
+    opf_spans, opf_seconds = await _detect_opf_async(request.text)
     spans = collect_spans(request.text, request.detection_mode, endpoint="/redact",
                           precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
     decision = decide_action(spans, request.source, request.target, request.mode)
@@ -579,7 +533,6 @@ async def redact(request: ScanRequest) -> dict[str, object]:
         "reason": decision["reason"],
         "spans": spans,
         "redacted_text": apply_redaction(request.text, spans),
-        "opf_available": opf_available,
         "timings": get_last_request_timing(),
     }
 
@@ -606,19 +559,23 @@ async def redact_file(
 
     try:
         try:
-            text = extract_text(tmp_path, suffix)
+            pdf_extraction = None
+            if suffix == ".pdf":
+                pdf_extraction = extract_pdf_with_metadata(tmp_path)
+                text = pdf_extraction.text
+            else:
+                text = extract_text(tmp_path, suffix)
         except UnsupportedFileTypeError as exc:
             return JSONResponse(status_code=422, content={"error": str(exc)})
 
         if not text.strip():
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        chunks = extract_chunks(text)
-        opf_spans, opf_seconds, opf_available = await _detect_opf_chunked(text, chunks)
+        opf_spans, opf_seconds = await _detect_opf_async(text, force=True)
         spans = collect_spans(text, detection_mode, endpoint="/redact-file",
                               precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
         decision = decide_action(spans, source, target, mode)
-        return {
+        response = {
             "filename": file.filename,
             "file_type": suffix.lstrip("."),
             "char_count": len(text),
@@ -629,9 +586,14 @@ async def redact_file(
             "spans": spans,
             "redacted_text": apply_redaction(text, spans),
             "summary": build_summary(spans),
-            "opf_available": opf_available,
             "timings": get_last_request_timing(),
         }
+        if pdf_extraction is not None:
+            response["extraction_method"] = "ocr" if pdf_extraction.used_ocr else "text_layer"
+            response["extraction_flags"] = pdf_extraction.quality_flags
+            response["pdf_provider"] = pdf_extraction.pdf_provider
+            response["page_providers"] = pdf_extraction.page_providers
+        return response
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -650,6 +612,8 @@ async def redact_file_download(
     mode: str = Form("warn"),
     detection_mode: str = Form(DETECTION_MODE_DEFAULT),
     active_categories: str = Form(None),
+    active_spans: str = Form(None),
+    precomputed_spans: str = Form(None),
 ) -> StreamingResponse:
     """
     返回脱敏后的原格式文件（PDF 或 DOCX）供下载。
@@ -669,40 +633,70 @@ async def redact_file_download(
         tmp_path = tmp.name
 
     try:
+        # When the client passes precomputed_spans, re-detection is skipped;
+        # OCR is also skipped since span coordinates already come from the /redact-file scan.
+        have_precomputed = bool(precomputed_spans)
         try:
-            text = extract_text(tmp_path, suffix)
+            pdf_extraction = None
+            if suffix == ".pdf":
+                pdf_extraction = extract_pdf_with_metadata(tmp_path, skip_ocr=have_precomputed)
+                text = pdf_extraction.text
+            else:
+                text = extract_text(tmp_path, suffix)
         except UnsupportedFileTypeError as exc:
             return JSONResponse(status_code=422, content={"error": str(exc)})
 
-        if not text.strip():
+        if not text.strip() and not have_precomputed:
             return JSONResponse(status_code=422, content={"error": "No text could be extracted from the file"})
 
-        chunks = extract_chunks(text)
-        opf_spans, opf_seconds, _opf_av = await _detect_opf_chunked(text, chunks)
-        spans = collect_spans(text, detection_mode, endpoint="/redact-file/download",
-                              precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
-
-        # Filter spans by active_categories if provided
         import json as _json
-        if active_categories:
+        if precomputed_spans:
+            try:
+                spans = _json.loads(precomputed_spans)
+            except Exception:
+                spans = []
+            if not spans:
+                opf_spans, opf_seconds = await _detect_opf_async(text, force=True)
+                spans = collect_spans(text, detection_mode, endpoint="/redact-file/download",
+                                      precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
+        else:
+            opf_spans, opf_seconds = await _detect_opf_async(text, force=True)
+            spans = collect_spans(text, detection_mode, endpoint="/redact-file/download",
+                                  precomputed_opf=opf_spans, precomputed_opf_seconds=opf_seconds)
+
+        # Filter spans by active_spans (exact triplet) > active_categories > all
+        filtered_spans: list[dict]
+        if active_spans:
+            try:
+                requested = {
+                    (int(e["start"]), int(e["end"]), e["label"])
+                    for e in _json.loads(active_spans)
+                }
+                filtered_spans = [
+                    s for s in spans
+                    if (int(s["start"]), int(s["end"]), s.get("label")) in requested
+                ]
+            except Exception:
+                filtered_spans = spans
+        elif active_categories:
             try:
                 allowed = set(_json.loads(active_categories))
-                active_spans = [s for s in spans if s.get("label") in allowed]
+                filtered_spans = [s for s in spans if s.get("label") in allowed]
             except Exception:
-                active_spans = spans
+                filtered_spans = spans
         else:
-            active_spans = spans
+            filtered_spans = spans
 
-        # Redact only the active spans
+        # Redact only the filtered spans
         redact_values = list({
             text[int(s["start"]):int(s["end"])]
-            for s in active_spans
+            for s in filtered_spans
             if text[int(s["start"]):int(s["end"])].strip()
         })
-        secret_count = sum(1 for s in active_spans if s.get("label") == "secret")
+        secret_count = sum(1 for s in filtered_spans if s.get("label") == "secret")
 
         if suffix == ".pdf":
-            file_bytes = redact_pdf_bytes(tmp_path, redact_values)
+            file_bytes = redact_pdf_bytes(tmp_path, pdf_extraction, filtered_spans)
         else:
             file_bytes = redact_docx_bytes(tmp_path, redact_values)
 

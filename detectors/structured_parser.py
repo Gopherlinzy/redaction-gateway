@@ -32,10 +32,6 @@ YAML_PAIR_PATTERN = re.compile(
     r"(?P<separator>:\s+)"
     r"(?P<raw_value>.+)$"
 )
-# 匹配 YAML 块标量起始行：key: | 或 key: >（可选注释）
-YAML_BLOCK_SCALAR_PATTERN = re.compile(
-    rf"^(?P<key>{KEY_PATTERN})\s*:\s*(?P<style>[|>])[-+]?\s*(?:#.*)?$"
-)
 LOG_SENTENCE_PATTERN = re.compile(
     r"^(?P<context_phrase>verification code is|OTP:|动态口令为：)\s*"
     r"(?P<candidate_value>[A-Za-z0-9-]+)$",
@@ -55,58 +51,10 @@ def _iter_lines(text: str):
 def parse_structured_fragments(text: str) -> list[dict[str, object]]:
     fragments: list[dict[str, object]] = []
 
-    # 状态机：处理 YAML 块标量（| 和 >）
-    block_key: str | None = None
-    block_lines: list[str] = []
-    block_start: int = 0
-    block_indent: int | None = None
-
-    def _flush_block(end_offset: int) -> None:
-        nonlocal block_key, block_lines, block_start, block_indent
-        if block_key and block_lines:
-            value = "\n".join(block_lines)
-            fragments.append({
-                "structure_kind": "yaml_block_scalar",
-                "raw_fragment": value,
-                "key": block_key,
-                "value": value,
-                "value_start": block_start,
-                "value_end": end_offset,
-            })
-        block_key = None
-        block_lines = []
-        block_indent = None
-
     for line, line_start, line_end in _iter_lines(text):
-        # 块标量收集中
-        if block_key is not None:
-            stripped = line.rstrip()
-            if not stripped:
-                # 空行：保留并继续（YAML 块内允许空行）
-                block_lines.append("")
-                continue
-            indent = len(line) - len(line.lstrip())
-            if block_indent is None and indent > 0:
-                block_indent = indent
-            if block_indent is not None and indent >= block_indent:
-                block_lines.append(stripped.lstrip())
-                continue
-            # 缩进归零：块结束，先 flush，再按普通行处理
-            _flush_block(line_start)
+        parsed_fragments = _parse_line(line, line_start, line_end)
+        fragments.extend(parsed_fragments)
 
-        # 普通行处理
-        m = YAML_BLOCK_SCALAR_PATTERN.match(line.strip())
-        if m:
-            _flush_block(line_start)  # 防止嵌套（一般不会）
-            block_key = m.group("key")
-            block_start = line_end + 1  # 块内容从下一行开始
-            block_lines = []
-            block_indent = None
-        else:
-            parsed_fragments = _parse_line(line, line_start, line_end)
-            fragments.extend(parsed_fragments)
-
-    _flush_block(len(text))
     return fragments
 
 
